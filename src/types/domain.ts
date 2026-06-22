@@ -24,6 +24,8 @@ export type StorageLocation =
 
 export type OpenedStatus = "unopened" | "opened";
 
+export type RecipeRating = 1 | 2 | 3 | 4 | 5;
+
 export type Transaction = {
   id: string;
   type: TransactionType;
@@ -53,10 +55,25 @@ export type Ingredient = {
   updatedAt: string;
 };
 
+export type UserRecipe = {
+  id: string;
+  name: string;
+  requiredIngredients: string[];
+  optionalIngredients: string[];
+  notes: string;
+  cookingTimeMinutes: number;
+  genre: string;
+  easeLevel: RecipeRating;
+  savingLevel: RecipeRating;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type HouseholdData = {
   schemaVersion: 1;
   transactions: Transaction[];
   ingredients: Ingredient[];
+  userRecipes: UserRecipe[];
 };
 
 export const expenseCategories = [

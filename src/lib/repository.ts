@@ -4,7 +4,9 @@ import type {
   Ingredient,
   IngredientUnit,
   OpenedStatus,
+  RecipeRating,
   StorageLocation,
+  UserRecipe,
 } from "@/types/domain";
 import { ingredientUnitOptions } from "@/types/domain";
 
@@ -14,6 +16,7 @@ export const emptyHouseholdData: HouseholdData = {
   schemaVersion: 1,
   transactions: [],
   ingredients: [],
+  userRecipes: [],
 };
 
 export interface HouseholdRepository {
@@ -37,11 +40,15 @@ export class LocalStorageHouseholdRepository implements HouseholdRepository {
       const ingredients = Array.isArray(parsed.ingredients)
         ? parsed.ingredients.map((ingredient) => normalizeIngredient(ingredient))
         : [];
+      const userRecipes = Array.isArray(parsed.userRecipes)
+        ? parsed.userRecipes.map((recipe) => normalizeUserRecipe(recipe))
+        : [];
 
       return {
         schemaVersion: 1,
         transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
         ingredients,
+        userRecipes,
       };
     } catch {
       return emptyHouseholdData;
@@ -86,9 +93,57 @@ function normalizeIngredient(value: unknown): Ingredient {
   };
 }
 
+function normalizeUserRecipe(value: unknown): UserRecipe {
+  const source = (value ?? {}) as Partial<UserRecipe> & {
+    cookingTimeMinutes?: unknown;
+    easeLevel?: unknown;
+    savingLevel?: unknown;
+  };
+  const now = new Date().toISOString();
+
+  return {
+    id: typeof source.id === "string" ? source.id : createId("recipe"),
+    name: typeof source.name === "string" ? source.name : "",
+    requiredIngredients: normalizeStringArray(source.requiredIngredients),
+    optionalIngredients: normalizeStringArray(source.optionalIngredients),
+    notes: typeof source.notes === "string" ? source.notes : "",
+    cookingTimeMinutes: normalizeCookingTime(source.cookingTimeMinutes),
+    genre: typeof source.genre === "string" ? source.genre : "自作",
+    easeLevel: normalizeRecipeRating(source.easeLevel),
+    savingLevel: normalizeRecipeRating(source.savingLevel),
+    createdAt: typeof source.createdAt === "string" ? source.createdAt : now,
+    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : now,
+  };
+}
+
 function normalizePrice(value: unknown): number {
   const price = typeof value === "number" ? value : Number(value);
   return Number.isFinite(price) && price > 0 ? price : 0;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeCookingTime(value: unknown): number {
+  const minutes = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : 10;
+}
+
+function normalizeRecipeRating(value: unknown): RecipeRating {
+  const rating = typeof value === "number" ? value : Number(value);
+  if (rating >= 1 && rating <= 5) {
+    return Math.round(rating) as RecipeRating;
+  }
+
+  return 3;
 }
 
 function normalizeUnit(value: unknown): IngredientUnit {

@@ -39,6 +39,7 @@ import {
   LocalStorageHouseholdRepository,
 } from "@/lib/repository";
 import { buildRecipeSuggestions } from "@/lib/recipes";
+import type { RecipeSuggestion } from "@/lib/recipes";
 import type {
   HouseholdData,
   Ingredient,
@@ -47,9 +48,11 @@ import type {
   ExpiryType,
   OpenedStatus,
   PaymentMethod,
+  RecipeRating,
   StorageLocation,
   Transaction,
   TransactionType,
+  UserRecipe,
 } from "@/types/domain";
 import {
   expenseCategories,
@@ -87,6 +90,17 @@ type IngredientFormState = {
   storageLocation: StorageLocation;
   openedStatus: OpenedStatus;
   memo: string;
+};
+
+type RecipeFormState = {
+  name: string;
+  requiredIngredients: string;
+  optionalIngredients: string;
+  notes: string;
+  cookingTimeMinutes: string;
+  genre: string;
+  easeLevel: string;
+  savingLevel: string;
 };
 
 type ReceiptItemDraft = {
@@ -148,6 +162,19 @@ function defaultIngredientForm(): IngredientFormState {
   };
 }
 
+function defaultRecipeForm(): RecipeFormState {
+  return {
+    name: "",
+    requiredIngredients: "",
+    optionalIngredients: "",
+    notes: "",
+    cookingTimeMinutes: "10",
+    genre: "簡単料理",
+    easeLevel: "4",
+    savingLevel: "4",
+  };
+}
+
 function defaultReceiptDraft(): ReceiptDraft {
   return {
     storeName: "",
@@ -187,6 +214,46 @@ function buildIngredientFromForm(form: IngredientFormState, now: string): Ingred
     createdAt: now,
     updatedAt: now,
   };
+}
+
+function buildUserRecipeFromForm(form: RecipeFormState, now: string): UserRecipe | null {
+  const name = form.name.trim();
+  const requiredIngredients = splitRecipeIngredients(form.requiredIngredients);
+  if (!name || requiredIngredients.length === 0) {
+    return null;
+  }
+
+  const cookingTimeMinutes = Math.max(1, Math.round(Number(form.cookingTimeMinutes) || 10));
+
+  return {
+    id: createId("recipe"),
+    name,
+    requiredIngredients,
+    optionalIngredients: splitRecipeIngredients(form.optionalIngredients),
+    notes: form.notes.trim(),
+    cookingTimeMinutes,
+    genre: form.genre.trim() || "自作",
+    easeLevel: normalizeRecipeRating(form.easeLevel),
+    savingLevel: normalizeRecipeRating(form.savingLevel),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function splitRecipeIngredients(value: string): string[] {
+  return value
+    .split(/[\n,、]+/)
+    .map((item) => item.trim())
+    .filter((item, index, array) => item && array.indexOf(item) === index);
+}
+
+function normalizeRecipeRating(value: string): RecipeRating {
+  const rating = Math.round(Number(value));
+  if (rating >= 1 && rating <= 5) {
+    return rating as RecipeRating;
+  }
+
+  return 3;
 }
 
 function stockFormFromTransaction(form: TransactionFormState): IngredientFormState {
@@ -438,6 +505,7 @@ export default function HomePage() {
   const [ingredientForm, setIngredientForm] =
     useState<IngredientFormState>(defaultIngredientForm);
   const [editingIngredientId, setEditingIngredientId] = useState<string | null>(null);
+  const [recipeForm, setRecipeForm] = useState<RecipeFormState>(defaultRecipeForm);
 
   useEffect(() => {
     repository.load().then((savedData) => {
@@ -471,8 +539,8 @@ export default function HomePage() {
     [data.ingredients],
   );
   const recipes = useMemo(
-    () => buildRecipeSuggestions(data.ingredients),
-    [data.ingredients],
+    () => buildRecipeSuggestions(data.ingredients, data.userRecipes),
+    [data.ingredients, data.userRecipes],
   );
   const expenseByCategory = useMemo(() => {
     return monthlyTransactions
@@ -484,7 +552,10 @@ export default function HomePage() {
       }, {});
   }, [monthlyTransactions]);
 
-  const hasAnyData = data.transactions.length > 0 || data.ingredients.length > 0;
+  const hasAnyData =
+    data.transactions.length > 0 ||
+    data.ingredients.length > 0 ||
+    data.userRecipes.length > 0;
   const editingTransaction = editingTransactionId
     ? data.transactions.find((transaction) => transaction.id === editingTransactionId)
     : null;
@@ -654,6 +725,33 @@ export default function HomePage() {
             }
           : ingredient,
       ),
+    }));
+  }
+
+  function addUserRecipe(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const now = new Date().toISOString();
+    const recipe = buildUserRecipeFromForm(recipeForm, now);
+    if (!recipe) {
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      userRecipes: [recipe, ...current.userRecipes],
+    }));
+    setRecipeForm(defaultRecipeForm());
+  }
+
+  function deleteUserRecipe(id: string) {
+    if (!window.confirm("このレシピを削除しますか？")) {
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      userRecipes: current.userRecipes.filter((recipe) => recipe.id !== id),
     }));
   }
 
@@ -835,6 +933,7 @@ export default function HomePage() {
     setTransactionForm(defaultTransactionForm());
     setEditingIngredientId(null);
     setIngredientForm(defaultIngredientForm());
+    setRecipeForm(defaultRecipeForm());
   }
 
   return (
@@ -901,6 +1000,11 @@ export default function HomePage() {
             <RecipesView
               expiringIngredients={expiringIngredients}
               recipes={recipes}
+              recipeForm={recipeForm}
+              userRecipes={data.userRecipes}
+              onAddRecipe={addUserRecipe}
+              onRecipeFormChange={setRecipeForm}
+              onDeleteUserRecipe={deleteUserRecipe}
               onChangeTab={setActiveTab}
             />
           )}
@@ -1021,7 +1125,11 @@ function DashboardView({
       )}
 
       <ExpiringSection ingredients={expiringIngredients} />
-      <RecipeSection recipes={recipes} />
+      <RecipeSection
+        title="今日おすすめ"
+        recipes={recipes.today}
+        emptyText="食材を登録すると、期限と相性を見て提案します。"
+      />
       <RecentTransactions
         transactions={recentTransactions}
         onEditTransaction={onEditTransaction}
@@ -1888,16 +1996,26 @@ function FoodStockFields({
 function RecipesView({
   expiringIngredients,
   recipes,
+  recipeForm,
+  userRecipes,
+  onAddRecipe,
+  onRecipeFormChange,
+  onDeleteUserRecipe,
   onChangeTab,
 }: {
   expiringIngredients: Ingredient[];
   recipes: ReturnType<typeof buildRecipeSuggestions>;
+  recipeForm: RecipeFormState;
+  userRecipes: UserRecipe[];
+  onAddRecipe: (event: FormEvent<HTMLFormElement>) => void;
+  onRecipeFormChange: (value: RecipeFormState | ((current: RecipeFormState) => RecipeFormState)) => void;
+  onDeleteUserRecipe: (id: string) => void;
   onChangeTab: (tab: Tab) => void;
 }) {
   return (
     <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <PageHeading eyebrow="Recipes" title="期限が近い食材から作る" />
+        <PageHeading eyebrow="Recipes" title="食材ストックから作る" />
         <button
           type="button"
           onClick={() => onChangeTab("foods")}
@@ -1909,8 +2027,212 @@ function RecipesView({
       </div>
 
       <ExpiringSection ingredients={expiringIngredients} />
-      <RecipeSection recipes={recipes} />
+      <RecipeFormSection
+        form={recipeForm}
+        userRecipes={userRecipes}
+        onSubmit={onAddRecipe}
+        onChange={onRecipeFormChange}
+        onDeleteRecipe={onDeleteUserRecipe}
+      />
+      <RecipeSection
+        title="今日おすすめ"
+        recipes={recipes.today}
+        emptyText="食材を登録すると、期限・相性・節約度を見て提案します。"
+      />
+      <RecipeSection
+        title="期限が近い食材を使うレシピ"
+        recipes={recipes.expiring}
+        emptyText="期限が近い食材を使う候補はまだありません。"
+      />
+      <RecipeSection
+        title="手持ち食材だけで作れるレシピ"
+        recipes={recipes.pantryOnly}
+        emptyText="手持ち食材だけで作れる候補はまだありません。"
+      />
+      <RecipeSection
+        title="あと1品買えば作れるレシピ"
+        recipes={recipes.oneMissing}
+        emptyText="あと1品の買い足しで作れる候補はまだありません。"
+      />
+      <RecipeSection
+        title="自分で追加したレシピ"
+        recipes={recipes.userRecipes}
+        emptyText="追加したレシピが食材ストックに合うとここに表示されます。"
+      />
     </div>
+  );
+}
+
+function RecipeFormSection({
+  form,
+  userRecipes,
+  onSubmit,
+  onChange,
+  onDeleteRecipe,
+}: {
+  form: RecipeFormState;
+  userRecipes: UserRecipe[];
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onChange: (value: RecipeFormState | ((current: RecipeFormState) => RecipeFormState)) => void;
+  onDeleteRecipe: (id: string) => void;
+}) {
+  const ratingOptions: RecipeRating[] = [1, 2, 3, 4, 5];
+
+  return (
+    <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+      <div className="flex items-center gap-2">
+        <Plus className="h-5 w-5 text-leaf" aria-hidden />
+        <h3 className="text-lg font-bold">レシピを追加</h3>
+      </div>
+
+      <form onSubmit={onSubmit} className="mt-4 grid gap-4 sm:grid-cols-2">
+        <label className="sm:col-span-2">
+          <span className="mb-1 block text-sm font-bold text-ink/70">レシピ名</span>
+          <input
+            required
+            value={form.name}
+            onChange={(event) => onChange((current) => ({ ...current, name: event.target.value }))}
+            placeholder="例: 卵かけご飯"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">必要な食材</span>
+          <textarea
+            required
+            value={form.requiredIngredients}
+            onChange={(event) =>
+              onChange((current) => ({ ...current, requiredIngredients: event.target.value }))
+            }
+            rows={3}
+            placeholder="例: 卵、 ご飯"
+            className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">任意の食材</span>
+          <textarea
+            value={form.optionalIngredients}
+            onChange={(event) =>
+              onChange((current) => ({ ...current, optionalIngredients: event.target.value }))
+            }
+            rows={3}
+            placeholder="例: ねぎ、チーズ"
+            className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+
+        <label className="sm:col-span-2">
+          <span className="mb-1 block text-sm font-bold text-ink/70">作り方メモ</span>
+          <textarea
+            value={form.notes}
+            onChange={(event) => onChange((current) => ({ ...current, notes: event.target.value }))}
+            rows={3}
+            placeholder="例: ご飯に卵をのせて、醤油を少し入れる"
+            className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">調理時間</span>
+          <input
+            required
+            inputMode="numeric"
+            min="1"
+            value={form.cookingTimeMinutes}
+            onChange={(event) =>
+              onChange((current) => ({ ...current, cookingTimeMinutes: event.target.value }))
+            }
+            type="number"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">ジャンル</span>
+          <input
+            value={form.genre}
+            onChange={(event) => onChange((current) => ({ ...current, genre: event.target.value }))}
+            placeholder="例: 朝食"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">簡単度</span>
+          <select
+            value={form.easeLevel}
+            onChange={(event) => onChange((current) => ({ ...current, easeLevel: event.target.value }))}
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          >
+            {ratingOptions.map((rating) => (
+              <option key={rating} value={rating}>
+                {rating}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">節約度</span>
+          <select
+            value={form.savingLevel}
+            onChange={(event) => onChange((current) => ({ ...current, savingLevel: event.target.value }))}
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          >
+            {ratingOptions.map((rating) => (
+              <option key={rating} value={rating}>
+                {rating}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="sm:col-span-2">
+          <button
+            type="submit"
+            className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-3 font-bold text-white shadow-sm sm:w-auto"
+          >
+            <Plus className="h-5 w-5" aria-hidden />
+            レシピを保存
+          </button>
+        </div>
+      </form>
+
+      {userRecipes.length > 0 && (
+        <div className="mt-5 border-t border-ink/10 pt-4">
+          <div className="flex items-center justify-between gap-3">
+            <h4 className="font-bold">追加済みレシピ</h4>
+            <span className="text-sm font-bold text-ink/60">{userRecipes.length}件</span>
+          </div>
+          <div className="mt-3 grid gap-2">
+            {userRecipes.map((recipe) => (
+              <div
+                key={recipe.id}
+                className="flex flex-col gap-3 rounded-lg border border-ink/10 bg-paper p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0">
+                  <p className="font-bold">{recipe.name}</p>
+                  <p className="mt-1 truncate text-sm text-ink/60">
+                    {recipe.requiredIngredients.join("、")} / {recipe.cookingTimeMinutes}分
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onDeleteRecipe(recipe.id)}
+                  className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-ink/10 bg-white px-3 py-2 text-sm font-bold text-ink/55 hover:text-tomato"
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden />
+                  削除
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -2059,13 +2381,13 @@ function SidePanel({
       <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
         <h2 className="text-lg font-bold">提案中のレシピ</h2>
         <div className="mt-3 space-y-3">
-          {recipes.slice(0, 2).map((recipe) => (
-            <div key={recipe.title} className="rounded-lg border border-ink/10 bg-paper p-3">
+          {recipes.today.slice(0, 2).map((recipe) => (
+            <div key={recipe.id} className="rounded-lg border border-ink/10 bg-paper p-3">
               <p className="font-bold">{recipe.title}</p>
               <p className="mt-1 text-sm text-ink/65">{recipe.usedIngredients.join("、")}</p>
             </div>
           ))}
-          {recipes.length === 0 && <EmptyState text="食材を登録すると提案が出ます。" />}
+          {recipes.today.length === 0 && <EmptyState text="食材を登録すると提案が出ます。" />}
         </div>
       </section>
     </div>
@@ -2092,41 +2414,155 @@ function ExpiringSection({ ingredients }: { ingredients: Ingredient[] }) {
   );
 }
 
-function RecipeSection({ recipes }: { recipes: ReturnType<typeof buildRecipeSuggestions> }) {
+function RecipeSection({
+  title,
+  recipes,
+  emptyText,
+}: {
+  title: string;
+  recipes: RecipeSuggestion[];
+  emptyText: string;
+}) {
   return (
     <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
       <div className="flex items-center gap-2">
         <Soup className="h-5 w-5 text-sea" aria-hidden />
-        <h3 className="text-lg font-bold">登録食材からレシピ提案</h3>
+        <h3 className="text-lg font-bold">{title}</h3>
       </div>
       <div className="mt-3 grid gap-3">
         {recipes.length === 0 ? (
-          <EmptyState text="食材を登録すると、期限が近いものを優先して提案します。" />
+          <EmptyState text={emptyText} />
         ) : (
-          recipes.map((recipe) => (
-            <article key={recipe.title} className="rounded-lg border border-ink/10 bg-paper p-4">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <h4 className="font-bold">{recipe.title}</h4>
-                  <p className="mt-1 text-sm text-ink/65">{recipe.subtitle}</p>
-                </div>
-                <p className="rounded-md bg-white px-2 py-1 text-xs font-bold text-sea">
-                  {recipe.usedIngredients.join("、")}
-                </p>
-              </div>
-              <ol className="mt-3 space-y-1 text-sm leading-6 text-ink/75">
-                {recipe.steps.map((step, index) => (
-                  <li key={step}>
-                    <span className="font-bold text-ink">{index + 1}. </span>
-                    {step}
-                  </li>
-                ))}
-              </ol>
-            </article>
-          ))
+          recipes.map((recipe) => <RecipeCard key={recipe.id} recipe={recipe} />)
         )}
       </div>
     </section>
+  );
+}
+
+function RecipeCard({ recipe }: { recipe: RecipeSuggestion }) {
+  return (
+    <article className="rounded-lg border border-ink/10 bg-paper p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="text-lg font-bold leading-snug">{recipe.title}</h4>
+            <span className="rounded-md bg-white px-2 py-1 text-xs font-bold text-sea">
+              {recipe.genre}
+            </span>
+            {recipe.source === "user" && (
+              <span className="rounded-md bg-leaf/10 px-2 py-1 text-xs font-bold text-leaf">
+                追加レシピ
+              </span>
+            )}
+          </div>
+          <p className="mt-1 text-sm leading-6 text-ink/65">{recipe.subtitle}</p>
+        </div>
+        <div className="grid grid-cols-3 gap-2 text-center sm:w-52">
+          <RecipeMetric label="簡単度" value={`${recipe.easeLevel}/5`} />
+          <RecipeMetric label="節約度" value={`${recipe.savingLevel}/5`} />
+          <RecipeMetric label="時間" value={`${recipe.cookingTimeMinutes}分`} />
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <RecipeChipGroup
+          label="使える手持ち食材"
+          values={recipe.usedIngredients}
+          emptyText="なし"
+          tone="leaf"
+        />
+        <RecipeChipGroup
+          label="足りない食材"
+          values={recipe.missingIngredients}
+          emptyText="なし"
+          tone={recipe.missingIngredients.length === 0 ? "leaf" : "tomato"}
+        />
+      </div>
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr_1.2fr]">
+        <div className="rounded-lg border border-ink/10 bg-white p-3">
+          <p className="text-xs font-bold text-ink/55">期限が近い食材</p>
+          <p className={`mt-1 text-sm font-bold ${recipe.usesExpiringIngredient ? "text-honey" : "text-ink/60"}`}>
+            {recipe.usesExpiringIngredient ? "使っています" : "使っていません"}
+          </p>
+        </div>
+        <div className="rounded-lg border border-ink/10 bg-white p-3">
+          <p className="text-xs font-bold text-ink/55">作りやすさ</p>
+          <RatingMeter value={recipe.easeLevel} />
+        </div>
+        <div className="rounded-lg border border-ink/10 bg-white p-3">
+          <p className="text-xs font-bold text-ink/55">なぜ提案したか</p>
+          <p className="mt-1 text-sm leading-6 text-ink/75">{recipe.reason}</p>
+        </div>
+      </div>
+
+      {recipe.steps.length > 0 && (
+        <ol className="mt-3 space-y-1 text-sm leading-6 text-ink/75">
+          {recipe.steps.slice(0, 3).map((step, index) => (
+            <li key={`${recipe.id}-${step}`}>
+              <span className="font-bold text-ink">{index + 1}. </span>
+              {step}
+            </li>
+          ))}
+        </ol>
+      )}
+    </article>
+  );
+}
+
+function RecipeMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-ink/10 bg-white px-2 py-2">
+      <p className="text-xs font-bold text-ink/55">{label}</p>
+      <p className="mt-1 text-sm font-bold text-ink">{value}</p>
+    </div>
+  );
+}
+
+function RecipeChipGroup({
+  label,
+  values,
+  emptyText,
+  tone,
+}: {
+  label: string;
+  values: string[];
+  emptyText: string;
+  tone: "leaf" | "tomato";
+}) {
+  const toneClass = tone === "leaf" ? "bg-leaf/10 text-leaf" : "bg-tomato/10 text-tomato";
+
+  return (
+    <div>
+      <p className="text-xs font-bold text-ink/55">{label}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {values.length === 0 ? (
+          <span className="rounded-md bg-white px-2 py-1 text-xs font-bold text-ink/55">
+            {emptyText}
+          </span>
+        ) : (
+          values.map((value) => (
+            <span key={value} className={`rounded-md px-2 py-1 text-xs font-bold ${toneClass}`}>
+              {value}
+            </span>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RatingMeter({ value }: { value: RecipeRating }) {
+  return (
+    <div className="mt-2 grid grid-cols-5 gap-1">
+      {[1, 2, 3, 4, 5].map((level) => (
+        <span
+          key={level}
+          className={`h-2 rounded-md ${level <= value ? "bg-leaf" : "bg-ink/10"}`}
+        />
+      ))}
+    </div>
   );
 }
 

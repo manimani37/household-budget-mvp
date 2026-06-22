@@ -1,5 +1,5 @@
 import { daysUntil, isSameMonth } from "@/lib/date";
-import type { HouseholdData, Ingredient, Transaction } from "@/types/domain";
+import type { ExpiryType, HouseholdData, Ingredient, Transaction } from "@/types/domain";
 
 export type MonthlySummary = {
   income: number;
@@ -41,7 +41,18 @@ export function getActiveIngredients(ingredients: Ingredient[]): Ingredient[] {
   return ingredients
     .filter((ingredient) => ingredient.status === "active")
     .sort((a, b) => {
-      const diff = daysUntil(a.expiryDate) - daysUntil(b.expiryDate);
+      const aDays = getIngredientExpiryDays(a);
+      const bDays = getIngredientExpiryDays(b);
+      if (aDays === null && bDays === null) {
+        return a.name.localeCompare(b.name, "ja");
+      }
+      if (aDays === null) {
+        return 1;
+      }
+      if (bDays === null) {
+        return -1;
+      }
+      const diff = aDays - bDays;
       return diff === 0 ? a.name.localeCompare(b.name, "ja") : diff;
     });
 }
@@ -51,19 +62,89 @@ export function getExpiringIngredients(
   withinDays = 5,
 ): Ingredient[] {
   return getActiveIngredients(ingredients).filter(
-    (ingredient) => daysUntil(ingredient.expiryDate) <= withinDays,
+    (ingredient) => {
+      const days = getIngredientExpiryDays(ingredient);
+      return days !== null && days <= withinDays;
+    },
   );
 }
 
-export function getExpiryTone(expiryDate: string): {
+export function getIngredientExpiryDays(ingredient: Ingredient): number | null {
+  if (ingredient.expiryType === "none" || !ingredient.expiryDate) {
+    return null;
+  }
+
+  return daysUntil(ingredient.expiryDate);
+}
+
+export function getIngredientExpiryInfo(ingredient: Ingredient): {
+  label: string;
+  detail: string;
+  className: string;
+  days: number | null;
+} {
+  const days = getIngredientExpiryDays(ingredient);
+
+  if (days === null) {
+    return {
+      label: "期限なし",
+      detail: "期限なし",
+      className: "border-ink/15 bg-white text-ink/60",
+      days,
+    };
+  }
+
+  if (days < 0) {
+    return {
+      label: "期限切れ",
+      detail: `${Math.abs(days)}日超過`,
+      className: "border-tomato/30 bg-tomato/10 text-tomato",
+      days,
+    };
+  }
+
+  if (days === 0) {
+    return {
+      label: "今日まで",
+      detail: "あと0日",
+      className: "border-tomato/30 bg-tomato/10 text-tomato",
+      days,
+    };
+  }
+
+  if (days <= 3) {
+    return {
+      label: "期限間近",
+      detail: `あと${days}日`,
+      className: "border-honey/40 bg-honey/15 text-[#8a570a]",
+      days,
+    };
+  }
+
+  return {
+    label: `あと${days}日`,
+    detail: `あと${days}日`,
+    className: "border-leaf/25 bg-leaf/10 text-leaf",
+    days,
+  };
+}
+
+export function getExpiryTone(expiryDate: string, expiryType: ExpiryType = "best_before"): {
   label: string;
   className: string;
 } {
+  if (expiryType === "none" || !expiryDate) {
+    return {
+      label: "期限なし",
+      className: "border-ink/15 bg-white text-ink/60",
+    };
+  }
+
   const days = daysUntil(expiryDate);
 
   if (days < 0) {
     return {
-      label: `${Math.abs(days)}日超過`,
+      label: "期限切れ",
       className: "border-tomato/30 bg-tomato/10 text-tomato",
     };
   }
@@ -75,9 +156,9 @@ export function getExpiryTone(expiryDate: string): {
     };
   }
 
-  if (days <= 2) {
+  if (days <= 3) {
     return {
-      label: `あと${days}日`,
+      label: "期限間近",
       className: "border-honey/40 bg-honey/15 text-[#8a570a]",
     };
   }

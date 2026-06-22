@@ -9,6 +9,7 @@ import {
   FileImage,
   Home,
   Loader2,
+  Pencil,
   Plus,
   ReceiptText,
   Settings2,
@@ -26,6 +27,7 @@ import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
 import {
   getActiveIngredients,
   getExpiringIngredients,
+  getIngredientExpiryInfo,
   getExpiryTone,
   getMonthlySummary,
   getMonthlyTransactions,
@@ -40,7 +42,10 @@ import { buildRecipeSuggestions } from "@/lib/recipes";
 import type {
   HouseholdData,
   Ingredient,
+  IngredientUnit,
   IngredientStatus,
+  ExpiryType,
+  OpenedStatus,
   PaymentMethod,
   StorageLocation,
   Transaction,
@@ -48,7 +53,10 @@ import type {
 } from "@/types/domain";
 import {
   expenseCategories,
+  expiryTypeLabels,
+  ingredientUnitOptions,
   incomeCategories,
+  openedStatusLabels,
   paymentMethodLabels,
   storageLocationLabels,
 } from "@/types/domain";
@@ -64,15 +72,20 @@ type TransactionFormState = {
   paymentMethod: PaymentMethod;
   date: string;
   memo: string;
+  addToStock: boolean;
+  stock: IngredientFormState;
 };
 
 type IngredientFormState = {
   name: string;
+  price: string;
   quantity: string;
-  unit: string;
+  unit: IngredientUnit;
   purchaseDate: string;
   expiryDate: string;
+  expiryType: ExpiryType;
   storageLocation: StorageLocation;
+  openedStatus: OpenedStatus;
   memo: string;
 };
 
@@ -80,10 +93,13 @@ type ReceiptItemDraft = {
   id: string;
   name: string;
   selected: boolean;
+  price: string;
   quantity: string;
-  unit: string;
+  unit: IngredientUnit;
   expiryDate: string;
+  expiryType: ExpiryType;
   storageLocation: StorageLocation;
+  openedStatus: OpenedStatus;
 };
 
 type ReceiptDraft = {
@@ -98,6 +114,8 @@ type ReceiptDraft = {
 
 const paymentMethods = Object.keys(paymentMethodLabels) as PaymentMethod[];
 const storageLocations = Object.keys(storageLocationLabels) as StorageLocation[];
+const expiryTypes = Object.keys(expiryTypeLabels) as ExpiryType[];
+const openedStatuses = Object.keys(openedStatusLabels) as OpenedStatus[];
 const OCR_LANGUAGE = "jpn+eng";
 const OCR_LANGUAGE_LABEL = "日本語 + 英語";
 const OCR_LANG_PATH = "https://tessdata.projectnaptha.com/4.0.0";
@@ -110,17 +128,22 @@ function defaultTransactionForm(): TransactionFormState {
     paymentMethod: "cash",
     date: todayIso(),
     memo: "",
+    addToStock: false,
+    stock: defaultIngredientForm(),
   };
 }
 
 function defaultIngredientForm(): IngredientFormState {
   return {
     name: "",
+    price: "",
     quantity: "1",
     unit: "個",
     purchaseDate: todayIso(),
     expiryDate: toIsoDate(addDays(new Date(), 3)),
+    expiryType: "best_before",
     storageLocation: "fridge",
+    openedStatus: "unopened",
     memo: "",
   };
 }
@@ -134,6 +157,44 @@ function defaultReceiptDraft(): ReceiptDraft {
     paymentMethod: "cash",
     rawText: "",
     items: [],
+  };
+}
+
+function parsePrice(value: string): number {
+  const price = Number(value);
+  return Number.isFinite(price) && price > 0 ? price : 0;
+}
+
+function buildIngredientFromForm(form: IngredientFormState, now: string): Ingredient | null {
+  const name = form.name.trim();
+  if (!name) {
+    return null;
+  }
+
+  return {
+    id: createId("food"),
+    name,
+    price: parsePrice(form.price),
+    quantity: form.quantity.trim() || "1",
+    unit: form.unit,
+    purchaseDate: form.purchaseDate || todayIso(),
+    expiryDate: form.expiryType === "none" ? "" : form.expiryDate,
+    expiryType: form.expiryType,
+    storageLocation: form.storageLocation,
+    openedStatus: form.openedStatus,
+    status: "active",
+    memo: form.memo.trim(),
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function stockFormFromTransaction(form: TransactionFormState): IngredientFormState {
+  return {
+    ...form.stock,
+    name: form.stock.name || form.memo,
+    price: form.stock.price || form.amount,
+    purchaseDate: form.stock.purchaseDate || form.date || todayIso(),
   };
 }
 
@@ -300,10 +361,13 @@ function extractReceiptItems(lines: string[], receiptDate: string): ReceiptItemD
     id: createId("receipt_item"),
     name,
     selected: looksLikeFood(name),
+    price: "",
     quantity: "1",
     unit: "個",
     expiryDate: toIsoDate(addDays(new Date(`${receiptDate}T00:00:00`), 3)),
+    expiryType: "best_before",
     storageLocation: "fridge",
+    openedStatus: "unopened",
   }));
 }
 
@@ -370,8 +434,10 @@ export default function HomePage() {
   const [transactionForm, setTransactionForm] = useState<TransactionFormState>(
     defaultTransactionForm,
   );
+  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
   const [ingredientForm, setIngredientForm] =
     useState<IngredientFormState>(defaultIngredientForm);
+  const [editingIngredientId, setEditingIngredientId] = useState<string | null>(null);
 
   useEffect(() => {
     repository.load().then((savedData) => {
@@ -419,6 +485,12 @@ export default function HomePage() {
   }, [monthlyTransactions]);
 
   const hasAnyData = data.transactions.length > 0 || data.ingredients.length > 0;
+  const editingTransaction = editingTransactionId
+    ? data.transactions.find((transaction) => transaction.id === editingTransactionId)
+    : null;
+  const editingIngredient = editingIngredientId
+    ? data.ingredients.find((ingredient) => ingredient.id === editingIngredientId)
+    : null;
   const transactionCategories =
     transactionForm.type === "expense" ? expenseCategories : incomeCategories;
 
@@ -431,52 +503,89 @@ export default function HomePage() {
     }
 
     const now = new Date().toISOString();
-    const transaction: Transaction = {
-      id: createId("txn"),
+    const transactionValues = {
       type: transactionForm.type,
       amount,
       category: transactionForm.category,
       paymentMethod: transactionForm.paymentMethod,
       date: transactionForm.date,
       memo: transactionForm.memo.trim(),
-      createdAt: now,
       updatedAt: now,
     };
+
+    if (editingTransactionId) {
+      setData((current) => ({
+        ...current,
+        transactions: current.transactions.map((transaction) =>
+          transaction.id === editingTransactionId
+            ? {
+                ...transaction,
+                ...transactionValues,
+              }
+            : transaction,
+        ),
+      }));
+      setEditingTransactionId(null);
+      setTransactionForm(defaultTransactionForm());
+      setActiveTab("home");
+      return;
+    }
+
+    const transaction: Transaction = {
+      id: createId("txn"),
+      ...transactionValues,
+      createdAt: now,
+    };
+    const stockIngredient = transactionForm.addToStock
+      ? buildIngredientFromForm(
+          {
+            ...stockFormFromTransaction(transactionForm),
+            price: transactionForm.stock.price || transactionForm.amount,
+            purchaseDate: transactionForm.stock.purchaseDate || transactionForm.date,
+          },
+          now,
+        )
+      : null;
 
     setData((current) => ({
       ...current,
       transactions: [transaction, ...current.transactions],
+      ingredients: stockIngredient ? [stockIngredient, ...current.ingredients] : current.ingredients,
     }));
-    setTransactionForm((current) => ({
-      ...current,
-      amount: "",
-      memo: "",
-      date: todayIso(),
-    }));
+    setTransactionForm(defaultTransactionForm());
     setActiveTab("home");
   }
 
   function addIngredient(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!ingredientForm.name.trim()) {
+    const now = new Date().toISOString();
+    const ingredient = buildIngredientFromForm(ingredientForm, now);
+    if (!ingredient) {
       return;
     }
 
-    const now = new Date().toISOString();
-    const ingredient: Ingredient = {
-      id: createId("food"),
-      name: ingredientForm.name.trim(),
-      quantity: ingredientForm.quantity.trim() || "1",
-      unit: ingredientForm.unit.trim() || "個",
-      purchaseDate: ingredientForm.purchaseDate,
-      expiryDate: ingredientForm.expiryDate,
-      storageLocation: ingredientForm.storageLocation,
-      status: "active",
-      memo: ingredientForm.memo.trim(),
-      createdAt: now,
-      updatedAt: now,
-    };
+    if (editingIngredientId) {
+      setData((current) => ({
+        ...current,
+        ingredients: current.ingredients.map((currentIngredient) =>
+          currentIngredient.id === editingIngredientId
+            ? {
+                ...currentIngredient,
+                ...ingredient,
+                id: currentIngredient.id,
+                status: currentIngredient.status,
+                createdAt: currentIngredient.createdAt,
+                updatedAt: now,
+              }
+            : currentIngredient,
+        ),
+      }));
+      setEditingIngredientId(null);
+      setIngredientForm(defaultIngredientForm());
+      setActiveTab("home");
+      return;
+    }
 
     setData((current) => ({
       ...current,
@@ -506,19 +615,24 @@ export default function HomePage() {
     };
     const ingredients: Ingredient[] = draft.items
       .filter((item) => item.selected && item.name.trim())
-      .map((item) => ({
-        id: createId("food"),
-        name: item.name.trim(),
-        quantity: item.quantity.trim() || "1",
-        unit: item.unit.trim() || "個",
-        purchaseDate: draft.date || todayIso(),
-        expiryDate: item.expiryDate || toIsoDate(addDays(new Date(), 3)),
-        storageLocation: item.storageLocation,
-        status: "active",
-        memo: draft.storeName ? `レシートOCR: ${draft.storeName}` : "レシートOCR",
-        createdAt: now,
-        updatedAt: now,
-      }));
+      .map((item) =>
+        buildIngredientFromForm(
+          {
+            name: item.name,
+            price: item.price,
+            quantity: item.quantity,
+            unit: item.unit,
+            purchaseDate: draft.date || todayIso(),
+            expiryDate: item.expiryType === "none" ? "" : item.expiryDate || toIsoDate(addDays(new Date(), 3)),
+            expiryType: item.expiryType,
+            storageLocation: item.storageLocation,
+            openedStatus: item.openedStatus,
+            memo: draft.storeName ? `レシートOCR: ${draft.storeName}` : "レシートOCR",
+          },
+          now,
+        ),
+      )
+      .filter((ingredient): ingredient is Ingredient => Boolean(ingredient));
 
     setData((current) => ({
       ...current,
@@ -543,11 +657,77 @@ export default function HomePage() {
     }));
   }
 
+  function startEditIngredient(ingredient: Ingredient) {
+    setIngredientForm({
+      name: ingredient.name,
+      price: ingredient.price > 0 ? String(ingredient.price) : "",
+      quantity: ingredient.quantity,
+      unit: ingredient.unit,
+      purchaseDate: ingredient.purchaseDate,
+      expiryDate: ingredient.expiryDate,
+      expiryType: ingredient.expiryType,
+      storageLocation: ingredient.storageLocation,
+      openedStatus: ingredient.openedStatus,
+      memo: ingredient.memo,
+    });
+    setEditingIngredientId(ingredient.id);
+    setActiveTab("foods");
+  }
+
+  function cancelIngredientEdit() {
+    setEditingIngredientId(null);
+    setIngredientForm(defaultIngredientForm());
+  }
+
+  function deleteIngredient(id: string) {
+    if (!window.confirm("この食材を削除しますか？")) {
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      ingredients: current.ingredients.filter((ingredient) => ingredient.id !== id),
+    }));
+
+    if (editingIngredientId === id) {
+      cancelIngredientEdit();
+    }
+  }
+
   function deleteTransaction(id: string) {
+    if (!window.confirm("この記録を削除しますか？")) {
+      return;
+    }
+
     setData((current) => ({
       ...current,
       transactions: current.transactions.filter((transaction) => transaction.id !== id),
     }));
+
+    if (editingTransactionId === id) {
+      setEditingTransactionId(null);
+      setTransactionForm(defaultTransactionForm());
+    }
+  }
+
+  function startEditTransaction(transaction: Transaction) {
+    setTransactionForm({
+      type: transaction.type,
+      amount: String(transaction.amount),
+      category: transaction.category,
+      paymentMethod: transaction.paymentMethod,
+      date: transaction.date,
+      memo: transaction.memo,
+      addToStock: false,
+      stock: defaultIngredientForm(),
+    });
+    setEditingTransactionId(transaction.id);
+    setActiveTab("record");
+  }
+
+  function cancelTransactionEdit() {
+    setEditingTransactionId(null);
+    setTransactionForm(defaultTransactionForm());
   }
 
   function addSampleData() {
@@ -591,11 +771,14 @@ export default function HomePage() {
       {
         id: createId("food"),
         name: "豆腐",
+        price: 128,
         quantity: "1",
-        unit: "丁",
+        unit: "個",
         purchaseDate: todayIso(),
         expiryDate: toIsoDate(addDays(new Date(), 1)),
+        expiryType: "use_by",
         storageLocation: "fridge",
+        openedStatus: "unopened",
         status: "active",
         memo: "",
         createdAt: now,
@@ -604,11 +787,14 @@ export default function HomePage() {
       {
         id: createId("food"),
         name: "玉ねぎ",
+        price: 198,
         quantity: "2",
         unit: "個",
         purchaseDate: todayIso(),
         expiryDate: toIsoDate(addDays(new Date(), 4)),
-        storageLocation: "pantry",
+        expiryType: "best_before",
+        storageLocation: "room",
+        openedStatus: "unopened",
         status: "active",
         memo: "",
         createdAt: now,
@@ -617,11 +803,14 @@ export default function HomePage() {
       {
         id: createId("food"),
         name: "卵",
+        price: 250,
         quantity: "6",
         unit: "個",
         purchaseDate: todayIso(),
         expiryDate: toIsoDate(addDays(new Date(), 5)),
+        expiryType: "best_before",
         storageLocation: "fridge",
+        openedStatus: "unopened",
         status: "active",
         memo: "",
         createdAt: now,
@@ -642,6 +831,10 @@ export default function HomePage() {
     }
 
     setData(emptyHouseholdData);
+    setEditingTransactionId(null);
+    setTransactionForm(defaultTransactionForm());
+    setEditingIngredientId(null);
+    setIngredientForm(defaultIngredientForm());
   }
 
   return (
@@ -673,6 +866,8 @@ export default function HomePage() {
               hasAnyData={hasAnyData}
               onAddSampleData={addSampleData}
               onChangeTab={setActiveTab}
+              onEditTransaction={startEditTransaction}
+              onDeleteTransaction={deleteTransaction}
             />
           )}
 
@@ -683,6 +878,8 @@ export default function HomePage() {
               onSubmit={addTransaction}
               onChange={setTransactionForm}
               onRegisterReceipt={addReceiptDraft}
+              isEditing={Boolean(editingTransaction)}
+              onCancelEdit={cancelTransactionEdit}
             />
           )}
 
@@ -693,6 +890,10 @@ export default function HomePage() {
               onSubmit={addIngredient}
               onChange={setIngredientForm}
               onUpdateStatus={updateIngredientStatus}
+              onEditIngredient={startEditIngredient}
+              onDeleteIngredient={deleteIngredient}
+              isEditing={Boolean(editingIngredient)}
+              onCancelEdit={cancelIngredientEdit}
             />
           )}
 
@@ -711,6 +912,7 @@ export default function HomePage() {
               summary={monthlySummary}
               monthlyTransactions={monthlyTransactions}
               expenseByCategory={expenseByCategory}
+              onEditTransaction={startEditTransaction}
               onDeleteTransaction={deleteTransaction}
               onClearAllData={clearAllData}
             />
@@ -741,6 +943,8 @@ function DashboardView({
   hasAnyData,
   onAddSampleData,
   onChangeTab,
+  onEditTransaction,
+  onDeleteTransaction,
 }: {
   selectedMonth: string;
   setSelectedMonth: (month: string) => void;
@@ -751,6 +955,8 @@ function DashboardView({
   hasAnyData: boolean;
   onAddSampleData: () => void;
   onChangeTab: (tab: Tab) => void;
+  onEditTransaction: (transaction: Transaction) => void;
+  onDeleteTransaction: (id: string) => void;
 }) {
   return (
     <div className="space-y-5">
@@ -816,7 +1022,11 @@ function DashboardView({
 
       <ExpiringSection ingredients={expiringIngredients} />
       <RecipeSection recipes={recipes} />
-      <RecentTransactions transactions={recentTransactions} />
+      <RecentTransactions
+        transactions={recentTransactions}
+        onEditTransaction={onEditTransaction}
+        onDeleteTransaction={onDeleteTransaction}
+      />
     </div>
   );
 }
@@ -827,12 +1037,16 @@ function RecordView({
   onSubmit,
   onChange,
   onRegisterReceipt,
+  isEditing,
+  onCancelEdit,
 }: {
   form: TransactionFormState;
   categories: string[];
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onChange: (value: TransactionFormState | ((current: TransactionFormState) => TransactionFormState)) => void;
   onRegisterReceipt: (draft: ReceiptDraft) => void;
+  isEditing: boolean;
+  onCancelEdit: () => void;
 }) {
   const [mode, setMode] = useState<RecordMode>("manual");
 
@@ -857,6 +1071,26 @@ function RecordView({
 
       {mode === "manual" ? (
       <form onSubmit={onSubmit} className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+        {isEditing && (
+          <div className="mb-5 rounded-lg border border-honey/30 bg-honey/10 p-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-bold text-ink">編集モード</p>
+                <p className="mt-1 text-sm text-ink/65">
+                  入力内容を変更して「更新する」を押すと、元の記録が更新されます。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onCancelEdit}
+                className="inline-flex min-h-11 items-center justify-center rounded-lg border border-ink/15 bg-white px-4 py-2 text-sm font-bold text-ink/70"
+              >
+                キャンセル
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-2">
           <SegmentButton
             selected={form.type === "expense"}
@@ -879,6 +1113,7 @@ function RecordView({
                 ...current,
                 type: "income",
                 category: incomeCategories[0],
+                addToStock: false,
               }))
             }
           />
@@ -962,12 +1197,51 @@ function RecordView({
           />
         </label>
 
+        {!isEditing && form.type === "expense" && (
+          <section className="mt-5 rounded-lg border border-leaf/20 bg-leaf/5 p-3 sm:p-4">
+            <label className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                checked={form.addToStock}
+                onChange={(event) =>
+                  onChange((current) => ({
+                    ...current,
+                    addToStock: event.target.checked,
+                    stock: event.target.checked ? stockFormFromTransaction(current) : current.stock,
+                  }))
+                }
+                className="mt-1 h-5 w-5 accent-leaf"
+              />
+              <span>
+                <span className="block font-bold text-ink">食材ストックにも追加する</span>
+                <span className="mt-1 block text-sm leading-6 text-ink/65">
+                  食費として記録しながら、期限や保存方法つきで食材ストックにも登録できます。
+                </span>
+              </span>
+            </label>
+
+            {form.addToStock && (
+              <div className="mt-4 rounded-lg border border-ink/10 bg-white p-3">
+                <FoodStockFields
+                  form={form.stock}
+                  onChange={(value) =>
+                    onChange((current) => ({
+                      ...current,
+                      stock: typeof value === "function" ? value(current.stock) : value,
+                    }))
+                  }
+                />
+              </div>
+            )}
+          </section>
+        )}
+
         <button
           type="submit"
           className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-3 font-bold text-white shadow-sm sm:w-auto"
         >
-          <Plus className="h-5 w-5" aria-hidden />
-          登録する
+          {isEditing ? <Pencil className="h-5 w-5" aria-hidden /> : <Plus className="h-5 w-5" aria-hidden />}
+          {isEditing ? "更新する" : "登録する"}
         </button>
       </form>
       ) : (
@@ -1075,10 +1349,13 @@ function ReceiptScanner({ onRegister }: { onRegister: (draft: ReceiptDraft) => v
           id: createId("receipt_item"),
           name: "",
           selected: true,
+          price: "",
           quantity: "1",
           unit: "個",
           expiryDate: toIsoDate(addDays(new Date(current.date || todayIso()), 3)),
+          expiryType: "best_before",
           storageLocation: "fridge",
+          openedStatus: "unopened",
         },
       ],
     }));
@@ -1266,13 +1543,25 @@ function ReceiptScanner({ onRegister }: { onRegister: (draft: ReceiptDraft) => v
                     onChange={(event) => updateItem(item.id, { selected: event.target.checked })}
                     className="mt-3 h-5 w-5 accent-leaf"
                   />
-                  <span className="grid flex-1 gap-3 sm:grid-cols-[1fr_96px_80px]">
+                  <span className="grid flex-1 gap-3 sm:grid-cols-[1fr_96px_120px]">
                     <span>
                       <span className="mb-1 block text-sm font-bold text-ink/70">商品名</span>
                       <input
                         aria-label="商品名"
                         value={item.name}
                         onChange={(event) => updateItem(item.id, { name: event.target.value })}
+                        className="min-h-12 w-full rounded-lg border border-ink/15 bg-white px-3 py-3"
+                      />
+                    </span>
+                    <span>
+                      <span className="mb-1 block text-sm font-bold text-ink/70">金額</span>
+                      <input
+                        aria-label="金額"
+                        value={item.price}
+                        onChange={(event) => updateItem(item.id, { price: event.target.value })}
+                        inputMode="numeric"
+                        type="number"
+                        min="0"
                         className="min-h-12 w-full rounded-lg border border-ink/15 bg-white px-3 py-3"
                       />
                     </span>
@@ -1287,15 +1576,45 @@ function ReceiptScanner({ onRegister }: { onRegister: (draft: ReceiptDraft) => v
                     </span>
                     <span>
                       <span className="mb-1 block text-sm font-bold text-ink/70">単位</span>
-                      <input
+                      <select
                         aria-label="単位"
                         value={item.unit}
-                        onChange={(event) => updateItem(item.id, { unit: event.target.value })}
+                        onChange={(event) => updateItem(item.id, { unit: event.target.value as IngredientUnit })}
                         className="min-h-12 w-full rounded-lg border border-ink/15 bg-white px-3 py-3"
-                      />
+                      >
+                        {ingredientUnitOptions.map((unit) => (
+                          <option key={unit} value={unit}>
+                            {unit}
+                          </option>
+                        ))}
+                      </select>
                     </span>
                     <span>
-                      <span className="mb-1 block text-sm font-bold text-ink/70">期限</span>
+                      <span className="mb-1 block text-sm font-bold text-ink/70">期限種類</span>
+                      <select
+                        aria-label="期限種類"
+                        value={item.expiryType}
+                        onChange={(event) =>
+                          updateItem(item.id, {
+                            expiryType: event.target.value as ExpiryType,
+                            expiryDate:
+                              event.target.value === "none"
+                                ? ""
+                                : item.expiryDate || toIsoDate(addDays(new Date(), 3)),
+                          })
+                        }
+                        className="min-h-12 w-full rounded-lg border border-ink/15 bg-white px-3 py-3"
+                      >
+                        {expiryTypes.map((type) => (
+                          <option key={type} value={type}>
+                            {expiryTypeLabels[type]}
+                          </option>
+                        ))}
+                      </select>
+                    </span>
+                    {item.expiryType !== "none" && (
+                    <span>
+                      <span className="mb-1 block text-sm font-bold text-ink/70">期限日</span>
                       <input
                         aria-label="期限"
                         value={item.expiryDate}
@@ -1304,6 +1623,7 @@ function ReceiptScanner({ onRegister }: { onRegister: (draft: ReceiptDraft) => v
                         className="min-h-12 w-full rounded-lg border border-ink/15 bg-white px-3 py-3"
                       />
                     </span>
+                    )}
                     <span>
                       <span className="mb-1 block text-sm font-bold text-ink/70">保存</span>
                       <select
@@ -1316,6 +1636,20 @@ function ReceiptScanner({ onRegister }: { onRegister: (draft: ReceiptDraft) => v
                         {storageLocations.map((location) => (
                           <option key={location} value={location}>
                             {storageLocationLabels[location]}
+                          </option>
+                        ))}
+                      </select>
+                    </span>
+                    <span>
+                      <span className="mb-1 block text-sm font-bold text-ink/70">開封状態</span>
+                      <select
+                        value={item.openedStatus}
+                        onChange={(event) => updateItem(item.id, { openedStatus: event.target.value as OpenedStatus })}
+                        className="min-h-12 w-full rounded-lg border border-ink/15 bg-white px-3 py-3"
+                      >
+                        {openedStatuses.map((status) => (
+                          <option key={status} value={status}>
+                            {openedStatusLabels[status]}
                           </option>
                         ))}
                       </select>
@@ -1347,130 +1681,206 @@ function FoodsView({
   onSubmit,
   onChange,
   onUpdateStatus,
+  onEditIngredient,
+  onDeleteIngredient,
+  isEditing,
+  onCancelEdit,
 }: {
   form: IngredientFormState;
   activeIngredients: Ingredient[];
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onChange: (value: IngredientFormState | ((current: IngredientFormState) => IngredientFormState)) => void;
   onUpdateStatus: (id: string, status: IngredientStatus) => void;
+  onEditIngredient: (ingredient: Ingredient) => void;
+  onDeleteIngredient: (id: string) => void;
+  isEditing: boolean;
+  onCancelEdit: () => void;
 }) {
   return (
     <div className="space-y-5">
-      <PageHeading eyebrow="Food stock" title="食材と期限を登録" />
+      <PageHeading eyebrow="Food stock" title="食材ストックを登録" />
 
       <form onSubmit={onSubmit} className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label>
-            <span className="mb-1 block text-sm font-bold text-ink/70">食材名</span>
-            <input
-              required
-              value={form.name}
-              onChange={(event) =>
-                onChange((current) => ({ ...current, name: event.target.value }))
-              }
-              placeholder="例: 豆腐"
-              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
-            />
-          </label>
-          <div className="grid grid-cols-[1fr_88px] gap-2">
-            <label>
-              <span className="mb-1 block text-sm font-bold text-ink/70">数量</span>
-              <input
-                value={form.quantity}
-                onChange={(event) =>
-                  onChange((current) => ({
-                    ...current,
-                    quantity: event.target.value,
-                  }))
-                }
-                className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
-              />
-            </label>
-            <label>
-              <span className="mb-1 block text-sm font-bold text-ink/70">単位</span>
-              <input
-                value={form.unit}
-                onChange={(event) =>
-                  onChange((current) => ({ ...current, unit: event.target.value }))
-                }
-                className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
-              />
-            </label>
+        {isEditing && (
+          <div className="mb-5 rounded-lg border border-honey/30 bg-honey/10 p-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-bold text-ink">食材を編集中</p>
+                <p className="mt-1 text-sm text-ink/65">内容を直して「更新する」を押すと保存されます。</p>
+              </div>
+              <button
+                type="button"
+                onClick={onCancelEdit}
+                className="inline-flex min-h-11 items-center justify-center rounded-lg border border-ink/15 bg-white px-4 py-2 text-sm font-bold text-ink/70"
+              >
+                キャンセル
+              </button>
+            </div>
           </div>
-          <label>
-            <span className="mb-1 block text-sm font-bold text-ink/70">購入日</span>
-            <input
-              value={form.purchaseDate}
-              onChange={(event) =>
-                onChange((current) => ({
-                  ...current,
-                  purchaseDate: event.target.value,
-                }))
-              }
-              type="date"
-              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
-            />
-          </label>
-          <label>
-            <span className="mb-1 block text-sm font-bold text-ink/70">期限</span>
-            <input
-              required
-              value={form.expiryDate}
-              onChange={(event) =>
-                onChange((current) => ({
-                  ...current,
-                  expiryDate: event.target.value,
-                }))
-              }
-              type="date"
-              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
-            />
-          </label>
-          <label>
-            <span className="mb-1 block text-sm font-bold text-ink/70">保存場所</span>
-            <select
-              value={form.storageLocation}
-              onChange={(event) =>
-                onChange((current) => ({
-                  ...current,
-                  storageLocation: event.target.value as StorageLocation,
-                }))
-              }
-              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
-            >
-              {storageLocations.map((location) => (
-                <option key={location} value={location}>
-                  {storageLocationLabels[location]}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span className="mb-1 block text-sm font-bold text-ink/70">メモ</span>
-            <input
-              value={form.memo}
-              onChange={(event) =>
-                onChange((current) => ({ ...current, memo: event.target.value }))
-              }
-              placeholder="例: 半分使用済み"
-              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
-            />
-          </label>
-        </div>
+        )}
+
+        <FoodStockFields form={form} onChange={onChange} />
 
         <button
           type="submit"
           className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-3 font-bold text-white shadow-sm sm:w-auto"
         >
-          <Plus className="h-5 w-5" aria-hidden />
-          食材を登録
+          {isEditing ? <Pencil className="h-5 w-5" aria-hidden /> : <Plus className="h-5 w-5" aria-hidden />}
+          {isEditing ? "更新する" : "食材を登録"}
         </button>
       </form>
 
       <IngredientList
         ingredients={activeIngredients}
         onUpdateStatus={onUpdateStatus}
+        onEditIngredient={onEditIngredient}
+        onDeleteIngredient={onDeleteIngredient}
       />
+    </div>
+  );
+}
+
+function FoodStockFields({
+  form,
+  onChange,
+}: {
+  form: IngredientFormState;
+  onChange: (value: IngredientFormState | ((current: IngredientFormState) => IngredientFormState)) => void;
+}) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-2">
+      <label>
+        <span className="mb-1 block text-sm font-bold text-ink/70">食材名</span>
+        <input
+          required
+          value={form.name}
+          onChange={(event) => onChange((current) => ({ ...current, name: event.target.value }))}
+          placeholder="例: 卵"
+          className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+        />
+      </label>
+      <label>
+        <span className="mb-1 block text-sm font-bold text-ink/70">金額</span>
+        <input
+          required
+          inputMode="numeric"
+          min="0"
+          value={form.price}
+          onChange={(event) => onChange((current) => ({ ...current, price: event.target.value }))}
+          type="number"
+          placeholder="例: 250"
+          className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+        />
+      </label>
+      <label>
+        <span className="mb-1 block text-sm font-bold text-ink/70">購入日</span>
+        <input
+          required
+          value={form.purchaseDate}
+          onChange={(event) => onChange((current) => ({ ...current, purchaseDate: event.target.value }))}
+          type="date"
+          className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+        />
+      </label>
+      <div className="grid grid-cols-[1fr_120px] gap-2">
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">数量</span>
+          <input
+            required
+            value={form.quantity}
+            onChange={(event) => onChange((current) => ({ ...current, quantity: event.target.value }))}
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">単位</span>
+          <select
+            value={form.unit}
+            onChange={(event) => onChange((current) => ({ ...current, unit: event.target.value as IngredientUnit }))}
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          >
+            {ingredientUnitOptions.map((unit) => (
+              <option key={unit} value={unit}>
+                {unit}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <label>
+        <span className="mb-1 block text-sm font-bold text-ink/70">期限の種類</span>
+        <select
+          value={form.expiryType}
+          onChange={(event) =>
+            onChange((current) => ({
+              ...current,
+              expiryType: event.target.value as ExpiryType,
+              expiryDate: event.target.value === "none" ? "" : current.expiryDate || toIsoDate(addDays(new Date(), 3)),
+            }))
+          }
+          className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+        >
+          {expiryTypes.map((type) => (
+            <option key={type} value={type}>
+              {expiryTypeLabels[type]}
+            </option>
+          ))}
+        </select>
+      </label>
+      {form.expiryType !== "none" && (
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">賞味期限・消費期限</span>
+          <input
+            required
+            value={form.expiryDate}
+            onChange={(event) => onChange((current) => ({ ...current, expiryDate: event.target.value }))}
+            type="date"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+      )}
+      <label>
+        <span className="mb-1 block text-sm font-bold text-ink/70">保存方法</span>
+        <select
+          value={form.storageLocation}
+          onChange={(event) =>
+            onChange((current) => ({ ...current, storageLocation: event.target.value as StorageLocation }))
+          }
+          className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+        >
+          {storageLocations.map((location) => (
+            <option key={location} value={location}>
+              {storageLocationLabels[location]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span className="mb-1 block text-sm font-bold text-ink/70">開封状態</span>
+        <select
+          value={form.openedStatus}
+          onChange={(event) =>
+            onChange((current) => ({ ...current, openedStatus: event.target.value as OpenedStatus }))
+          }
+          className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+        >
+          {openedStatuses.map((status) => (
+            <option key={status} value={status}>
+              {openedStatusLabels[status]}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="sm:col-span-2">
+        <span className="mb-1 block text-sm font-bold text-ink/70">メモ</span>
+        <textarea
+          value={form.memo}
+          onChange={(event) => onChange((current) => ({ ...current, memo: event.target.value }))}
+          rows={3}
+          placeholder="例: 開封後は早めに使う"
+          className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+        />
+      </label>
     </div>
   );
 }
@@ -1510,6 +1920,7 @@ function SettingsView({
   summary,
   monthlyTransactions,
   expenseByCategory,
+  onEditTransaction,
   onDeleteTransaction,
   onClearAllData,
 }: {
@@ -1518,6 +1929,7 @@ function SettingsView({
   summary: ReturnType<typeof getMonthlySummary>;
   monthlyTransactions: Transaction[];
   expenseByCategory: Record<string, number>;
+  onEditTransaction: (transaction: Transaction) => void;
   onDeleteTransaction: (id: string) => void;
   onClearAllData: () => void;
 }) {
@@ -1589,6 +2001,7 @@ function SettingsView({
           </div>
           <TransactionList
             transactions={monthlyTransactions}
+            onEditTransaction={onEditTransaction}
             onDeleteTransaction={onDeleteTransaction}
           />
         </section>
@@ -1717,14 +2130,26 @@ function RecipeSection({ recipes }: { recipes: ReturnType<typeof buildRecipeSugg
   );
 }
 
-function RecentTransactions({ transactions }: { transactions: Transaction[] }) {
+function RecentTransactions({
+  transactions,
+  onEditTransaction,
+  onDeleteTransaction,
+}: {
+  transactions: Transaction[];
+  onEditTransaction: (transaction: Transaction) => void;
+  onDeleteTransaction: (id: string) => void;
+}) {
   return (
     <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
       <div className="flex items-center gap-2">
         <ClipboardList className="h-5 w-5 text-leaf" aria-hidden />
         <h3 className="text-lg font-bold">最近の記録</h3>
       </div>
-      <TransactionList transactions={transactions} />
+      <TransactionList
+        transactions={transactions}
+        onEditTransaction={onEditTransaction}
+        onDeleteTransaction={onDeleteTransaction}
+      />
     </section>
   );
 }
@@ -1732,9 +2157,13 @@ function RecentTransactions({ transactions }: { transactions: Transaction[] }) {
 function IngredientList({
   ingredients,
   onUpdateStatus,
+  onEditIngredient,
+  onDeleteIngredient,
 }: {
   ingredients: Ingredient[];
   onUpdateStatus: (id: string, status: IngredientStatus) => void;
+  onEditIngredient: (ingredient: Ingredient) => void;
+  onDeleteIngredient: (id: string) => void;
 }) {
   return (
     <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
@@ -1747,27 +2176,55 @@ function IngredientList({
           <EmptyState text="食材を登録すると期限順で表示されます。" />
         ) : (
           ingredients.map((ingredient) => {
-            const tone = getExpiryTone(ingredient.expiryDate);
+            const expiryInfo = getIngredientExpiryInfo(ingredient);
+            const expiryDateLabel =
+              ingredient.expiryType === "none" || !ingredient.expiryDate
+                ? "期限なし"
+                : `${expiryTypeLabels[ingredient.expiryType]} ${formatShortDate(ingredient.expiryDate)}`;
             return (
               <article key={ingredient.id} className="rounded-lg border border-ink/10 bg-paper p-4">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
+                  <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h4 className="text-lg font-bold">{ingredient.name}</h4>
-                      <span className={`rounded-md border px-2 py-1 text-xs font-bold ${tone.className}`}>
-                        {tone.label}
+                      <span className={`rounded-md border px-2 py-1 text-xs font-bold ${expiryInfo.className}`}>
+                        {expiryInfo.label}
+                      </span>
+                      <span className="rounded-md border border-ink/10 bg-white px-2 py-1 text-xs font-bold text-ink/60">
+                        {openedStatusLabels[ingredient.openedStatus]}
                       </span>
                     </div>
-                    <p className="mt-1 text-sm text-ink/70">
-                      {ingredient.quantity}
-                      {ingredient.unit} / {storageLocationLabels[ingredient.storageLocation]} / 期限{" "}
-                      {formatShortDate(ingredient.expiryDate)}
-                    </p>
+                    <div className="mt-2 grid gap-1 text-sm leading-6 text-ink/70 sm:grid-cols-2">
+                      <p>
+                        数量: {ingredient.quantity}
+                        {ingredient.unit}
+                      </p>
+                      <p>保存: {storageLocationLabels[ingredient.storageLocation]}</p>
+                      <p>{expiryDateLabel}</p>
+                      <p>{expiryInfo.detail}</p>
+                      {ingredient.price > 0 && <p>金額: {formatYen(ingredient.price)}</p>}
+                    </div>
                     {ingredient.memo && (
                       <p className="mt-1 text-sm text-ink/55">{ingredient.memo}</p>
                     )}
                   </div>
-                  <div className="flex gap-2">
+                  <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
+                    <button
+                      type="button"
+                      onClick={() => onEditIngredient(ingredient)}
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm font-bold text-ink/70 hover:text-sea"
+                    >
+                      <Pencil className="h-4 w-4" aria-hidden />
+                      編集
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteIngredient(ingredient.id)}
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-tomato/25 bg-white px-3 py-2 text-sm font-bold text-tomato"
+                    >
+                      <Trash2 className="h-4 w-4" aria-hidden />
+                      削除
+                    </button>
                     <button
                       type="button"
                       onClick={() => onUpdateStatus(ingredient.id, "used")}
@@ -1797,9 +2254,11 @@ function IngredientList({
 
 function TransactionList({
   transactions,
+  onEditTransaction,
   onDeleteTransaction,
 }: {
   transactions: Transaction[];
+  onEditTransaction?: (transaction: Transaction) => void;
   onDeleteTransaction?: (id: string) => void;
 }) {
   return (
@@ -1810,7 +2269,7 @@ function TransactionList({
         transactions.map((transaction) => (
           <article
             key={transaction.id}
-            className="flex items-center justify-between gap-3 rounded-lg border border-ink/10 bg-paper px-3 py-3"
+            className="flex flex-col gap-3 rounded-lg border border-ink/10 bg-paper px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
           >
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -1830,25 +2289,39 @@ function TransactionList({
                 {transaction.memo ? ` / ${transaction.memo}` : ""}
               </p>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 flex-col gap-2 sm:items-end">
               <p
-                className={`font-bold ${
+                className={`text-right font-bold ${
                   transaction.type === "income" ? "text-leaf" : "text-tomato"
                 }`}
               >
                 {transaction.type === "income" ? "+" : "-"}
                 {formatYen(transaction.amount)}
               </p>
-              {onDeleteTransaction && (
-                <button
-                  type="button"
-                  onClick={() => onDeleteTransaction(transaction.id)}
-                  className="rounded-lg border border-ink/10 bg-white p-2 text-ink/55 hover:text-tomato"
-                  title="記録を削除"
-                >
-                  <Trash2 className="h-4 w-4" aria-hidden />
-                </button>
-              )}
+              <div className="grid grid-cols-2 gap-2 sm:flex">
+                {onEditTransaction && (
+                  <button
+                    type="button"
+                    onClick={() => onEditTransaction(transaction)}
+                    className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-ink/10 bg-white px-3 py-2 text-sm font-bold text-ink/70 hover:text-sea"
+                    title="記録を編集"
+                  >
+                    <Pencil className="h-4 w-4" aria-hidden />
+                    編集
+                  </button>
+                )}
+                {onDeleteTransaction && (
+                  <button
+                    type="button"
+                    onClick={() => onDeleteTransaction(transaction.id)}
+                    className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-ink/10 bg-white px-3 py-2 text-sm font-bold text-ink/55 hover:text-tomato"
+                    title="記録を削除"
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                    削除
+                  </button>
+                )}
+              </div>
             </div>
           </article>
         ))
@@ -1858,7 +2331,11 @@ function TransactionList({
 }
 
 function SmallIngredientRow({ ingredient }: { ingredient: Ingredient }) {
-  const tone = getExpiryTone(ingredient.expiryDate);
+  const tone = getExpiryTone(ingredient.expiryDate, ingredient.expiryType);
+  const expiryText =
+    ingredient.expiryType === "none" || !ingredient.expiryDate
+      ? "期限なし"
+      : formatShortDate(ingredient.expiryDate);
 
   return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-ink/10 bg-paper px-3 py-3">
@@ -1866,7 +2343,7 @@ function SmallIngredientRow({ ingredient }: { ingredient: Ingredient }) {
         <p className="truncate font-bold">{ingredient.name}</p>
         <p className="text-sm text-ink/60">
           {ingredient.quantity}
-          {ingredient.unit} / {formatShortDate(ingredient.expiryDate)}
+          {ingredient.unit} / {expiryText}
         </p>
       </div>
       <span className={`shrink-0 rounded-md border px-2 py-1 text-xs font-bold ${tone.className}`}>

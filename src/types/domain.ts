@@ -10,7 +10,19 @@ export type PaymentMethod =
 
 export type IngredientStatus = "active" | "used" | "discarded";
 
-export type StorageLocation = "fridge" | "freezer" | "pantry" | "other";
+export type IngredientUnit = "個" | "本" | "袋" | "パック" | "g" | "kg" | "ml" | "L" | "その他";
+
+export type ExpiryType = "best_before" | "use_by" | "none";
+
+export type StorageLocation =
+  | "room"
+  | "fridge"
+  | "freezer"
+  | "vegetable_room"
+  | "opened_fridge"
+  | "other";
+
+export type OpenedStatus = "unopened" | "opened";
 
 export type Transaction = {
   id: string;
@@ -27,11 +39,14 @@ export type Transaction = {
 export type Ingredient = {
   id: string;
   name: string;
+  price: number;
   quantity: string;
-  unit: string;
+  unit: IngredientUnit;
   purchaseDate: string;
   expiryDate: string;
+  expiryType: ExpiryType;
   storageLocation: StorageLocation;
+  openedStatus: OpenedStatus;
   status: IngredientStatus;
   memo: string;
   createdAt: string;
@@ -66,9 +81,34 @@ export const paymentMethodLabels: Record<PaymentMethod, string> = {
   other: "その他",
 };
 
+export const ingredientUnitOptions: IngredientUnit[] = [
+  "個",
+  "本",
+  "袋",
+  "パック",
+  "g",
+  "kg",
+  "ml",
+  "L",
+  "その他",
+];
+
+export const expiryTypeLabels: Record<ExpiryType, string> = {
+  best_before: "賞味期限",
+  use_by: "消費期限",
+  none: "期限なし",
+};
+
 export const storageLocationLabels: Record<StorageLocation, string> = {
+  room: "常温",
   fridge: "冷蔵",
   freezer: "冷凍",
-  pantry: "常温",
+  vegetable_room: "野菜室",
+  opened_fridge: "開封後冷蔵",
   other: "その他",
+};
+
+export const openedStatusLabels: Record<OpenedStatus, string> = {
+  unopened: "未開封",
+  opened: "開封済み",
 };

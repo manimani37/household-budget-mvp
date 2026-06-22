@@ -2302,58 +2302,98 @@ function FoodsView({
   onCancelEdit: () => void;
   isDictionaryEditing: boolean;
 }) {
+  const [foodTab, setFoodTab] = useState<"register" | "list">(isEditing ? "register" : "list");
+
+  useEffect(() => {
+    if (isEditing) {
+      setFoodTab("register");
+    }
+  }, [isEditing]);
+
+  function handleIngredientSubmit(event: FormEvent<HTMLFormElement>) {
+    onSubmit(event);
+    setFoodTab("list");
+  }
+
+  function handleCancelEdit() {
+    onCancelEdit();
+    setFoodTab("list");
+  }
+
   return (
     <div className="space-y-5">
-      <PageHeading eyebrow="Food stock" title="食材ストックを登録" />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <PageHeading eyebrow="Food stock" title="食材管理" />
+        <div className="grid grid-cols-2 gap-2 rounded-lg border border-ink/10 bg-white p-2 shadow-soft sm:w-80">
+          <SegmentButton
+            selected={foodTab === "register"}
+            label="食材登録"
+            icon={Plus}
+            onClick={() => setFoodTab("register")}
+          />
+          <SegmentButton
+            selected={foodTab === "list"}
+            label="食材一覧"
+            icon={ClipboardList}
+            onClick={() => setFoodTab("list")}
+          />
+        </div>
+      </div>
 
-      <form onSubmit={onSubmit} className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
-        {isEditing && (
-          <div className="mb-5 rounded-lg border border-honey/30 bg-honey/10 p-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-bold text-ink">食材を編集中</p>
-                <p className="mt-1 text-sm text-ink/65">内容を直して「更新する」を押すと保存されます。</p>
-              </div>
+      {foodTab === "register" && (
+        <form onSubmit={handleIngredientSubmit} className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h3 className="text-lg font-bold">{isEditing ? "食材を編集" : "食材を登録"}</h3>
+              <p className="mt-1 text-sm leading-6 text-ink/65">
+                名前、数量、金額、期限、保存方法を入力して食材ストックに追加します。
+              </p>
+            </div>
+            {isEditing && (
               <button
                 type="button"
-                onClick={onCancelEdit}
+                onClick={handleCancelEdit}
                 className="inline-flex min-h-11 items-center justify-center rounded-lg border border-ink/15 bg-white px-4 py-2 text-sm font-bold text-ink/70"
               >
                 キャンセル
               </button>
-            </div>
+            )}
           </div>
-        )}
 
-        <FoodStockFields form={form} onChange={onChange} />
+          <FoodStockFields form={form} onChange={onChange} />
 
-        <button
-          type="submit"
-          className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-3 font-bold text-white shadow-sm sm:w-auto"
-        >
-          {isEditing ? <Pencil className="h-5 w-5" aria-hidden /> : <Plus className="h-5 w-5" aria-hidden />}
-          {isEditing ? "更新する" : "食材を登録"}
-        </button>
-      </form>
+          <button
+            type="submit"
+            className="mt-5 inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-3 font-bold text-white shadow-sm sm:w-auto"
+          >
+            {isEditing ? <Pencil className="h-5 w-5" aria-hidden /> : <Plus className="h-5 w-5" aria-hidden />}
+            {isEditing ? "更新する" : "食材を登録"}
+          </button>
+        </form>
+      )}
 
-      <IngredientList
-        ingredients={activeIngredients}
-        onUpdateStatus={onUpdateStatus}
-        onEditIngredient={onEditIngredient}
-        onDeleteIngredient={onDeleteIngredient}
-      />
-      <IngredientDictionarySection
-        form={dictionaryForm}
-        unclassifiedIngredients={unclassifiedIngredients}
-        userIngredientDictionary={userIngredientDictionary}
-        onSubmit={onDictionarySubmit}
-        onChange={onDictionaryChange}
-        onEditDictionaryItem={onEditDictionaryItem}
-        onDeleteDictionaryItem={onDeleteDictionaryItem}
-        onCancelEdit={onCancelDictionaryEdit}
-        onUseIngredientAsDictionaryDraft={onUseIngredientAsDictionaryDraft}
-        isEditing={isDictionaryEditing}
-      />
+      {foodTab === "list" && (
+        <>
+          <IngredientList
+            ingredients={activeIngredients}
+            onUpdateStatus={onUpdateStatus}
+            onEditIngredient={onEditIngredient}
+            onDeleteIngredient={onDeleteIngredient}
+          />
+          <IngredientDictionarySection
+            form={dictionaryForm}
+            unclassifiedIngredients={unclassifiedIngredients}
+            userIngredientDictionary={userIngredientDictionary}
+            onSubmit={onDictionarySubmit}
+            onChange={onDictionaryChange}
+            onEditDictionaryItem={onEditDictionaryItem}
+            onDeleteDictionaryItem={onDeleteDictionaryItem}
+            onCancelEdit={onCancelDictionaryEdit}
+            onUseIngredientAsDictionaryDraft={onUseIngredientAsDictionaryDraft}
+            isEditing={isDictionaryEditing}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -3958,17 +3998,99 @@ function IngredientList({
   onEditIngredient: (ingredient: Ingredient) => void;
   onDeleteIngredient: (id: string) => void;
 }) {
+  const [searchText, setSearchText] = useState("");
+  const [storageFilter, setStorageFilter] = useState<"all" | StorageLocation>("all");
+  const [expiryFilter, setExpiryFilter] = useState<"all" | "expiring" | "expired" | "none">("all");
+  const normalizedSearchText = searchText.trim().toLowerCase();
+  const filteredIngredients = ingredients.filter((ingredient) => {
+    const expiryInfo = getIngredientExpiryInfo(ingredient);
+    const searchableText = [
+      ingredient.name,
+      ingredient.memo,
+      storageLocationLabels[ingredient.storageLocation],
+      ingredient.quantity,
+      ingredient.unit,
+    ]
+      .join(" ")
+      .toLowerCase();
+    const matchesSearch = !normalizedSearchText || searchableText.includes(normalizedSearchText);
+    const matchesStorage =
+      storageFilter === "all" || ingredient.storageLocation === storageFilter;
+    const matchesExpiry =
+      expiryFilter === "all" ||
+      (expiryFilter === "none" && ingredient.expiryType === "none") ||
+      (expiryFilter === "expired" && expiryInfo.days !== null && expiryInfo.days < 0) ||
+      (expiryFilter === "expiring" &&
+        expiryInfo.days !== null &&
+        expiryInfo.days >= 0 &&
+        expiryInfo.days <= 5);
+
+    return matchesSearch && matchesStorage && matchesExpiry;
+  });
+
   return (
     <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-lg font-bold">登録中の食材</h3>
-        <span className="text-sm font-bold text-ink/60">{ingredients.length}件</span>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-lg font-bold">登録中の食材</h3>
+          <p className="mt-1 text-sm text-ink/65">
+            検索や絞り込みで、期限が近い食材や保存場所ごとの食材を確認できます。
+          </p>
+        </div>
+        <span className="shrink-0 text-sm font-bold text-ink/60">
+          {filteredIngredients.length} / {ingredients.length}件
+        </span>
       </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_180px_180px]">
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">食材の検索</span>
+          <input
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+            placeholder="食材名、メモ、保存場所で検索"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">保存方法</span>
+          <select
+            value={storageFilter}
+            onChange={(event) => setStorageFilter(event.target.value as "all" | StorageLocation)}
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          >
+            <option value="all">すべて</option>
+            {storageLocations.map((location) => (
+              <option key={location} value={location}>
+                {storageLocationLabels[location]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">期限状態</span>
+          <select
+            value={expiryFilter}
+            onChange={(event) =>
+              setExpiryFilter(event.target.value as "all" | "expiring" | "expired" | "none")
+            }
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          >
+            <option value="all">すべて</option>
+            <option value="expiring">期限が近い</option>
+            <option value="expired">期限切れ</option>
+            <option value="none">期限なし</option>
+          </select>
+        </label>
+      </div>
+
       <div className="mt-3 space-y-3">
         {ingredients.length === 0 ? (
           <EmptyState text="食材を登録すると期限順で表示されます。" />
+        ) : filteredIngredients.length === 0 ? (
+          <EmptyState text="条件に合う食材がありません。検索や絞り込みを変更してください。" />
         ) : (
-          ingredients.map((ingredient) => {
+          filteredIngredients.map((ingredient) => {
             const expiryInfo = getIngredientExpiryInfo(ingredient);
             const expiryDateLabel =
               ingredient.expiryType === "none" || !ingredient.expiryDate

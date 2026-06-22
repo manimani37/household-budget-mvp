@@ -82,7 +82,7 @@ export const ingredientDictionary: IngredientDictionaryEntry[] = [
   {
     id: "egg",
     canonicalName: "卵",
-    aliases: ["たまご", "玉子", "玉子", "egg", "eggs"],
+    aliases: ["たまご", "玉子", "egg", "eggs"],
     category: "卵・乳製品",
     compatibleIngredients: ["ねぎ", "玉ねぎ", "ベーコン", "ハム", "ご飯", "チーズ"],
     commonGenres: ["朝食", "丼", "炒め物", "簡単料理"],
@@ -660,7 +660,7 @@ function groupSuggestions(suggestions: RecipeSuggestion[]): RecipeSuggestionGrou
     expiring: limited.filter((recipe) => recipe.usesExpiringIngredient).slice(0, 6),
     pantryOnly: limited.filter((recipe) => recipe.missingIngredients.length === 0).slice(0, 6),
     oneMissing: limited.filter((recipe) => recipe.missingIngredients.length === 1).slice(0, 6),
-    userRecipes: limited.filter((recipe) => recipe.source === "user"),
+    userRecipes: suggestions.filter((recipe) => recipe.source === "user").slice(0, 8),
   };
 }
 

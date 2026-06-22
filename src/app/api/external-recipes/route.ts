@@ -34,11 +34,9 @@ export async function GET() {
 
   return NextResponse.json({
     configured: environment.missingNames.length === 0,
-    requiredEnvNames: Object.values(RAKUTEN_ENV_NAMES),
     missingEnvNames: environment.missingNames,
     hasApplicationId: Boolean(environment.applicationId),
     hasAccessKey: Boolean(environment.accessKey),
-    note: "APIキーの値は返していません。この確認はサーバー側の環境変数読み込み状態だけを示します。",
   });
 }
 
@@ -51,7 +49,6 @@ export async function POST(request: Request) {
       message: buildMissingEnvironmentMessage(environment.missingNames),
       envStatus: {
         configured: false,
-        requiredEnvNames: Object.values(RAKUTEN_ENV_NAMES),
         missingEnvNames: environment.missingNames,
       },
     });

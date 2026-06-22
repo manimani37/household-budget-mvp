@@ -1,11 +1,17 @@
 import { daysUntil, isSameMonth } from "@/lib/date";
-import type { ExpiryType, HouseholdData, Ingredient, Transaction } from "@/types/domain";
+import type { CookedDish, ExpiryType, HouseholdData, Ingredient, Transaction } from "@/types/domain";
 
 export type MonthlySummary = {
   income: number;
   expense: number;
   balance: number;
   transactionCount: number;
+};
+
+export type CookingMonthlySummary = {
+  dishCount: number;
+  totalCost: number;
+  averageCostPerDish: number;
 };
 
 export function getMonthlyTransactions(
@@ -34,6 +40,32 @@ export function getMonthlySummary(
     expense,
     balance: income - expense,
     transactionCount: monthly.length,
+  };
+}
+
+export function getMonthlyCookedDishes(
+  cookedDishes: CookedDish[],
+  monthKey: string,
+): CookedDish[] {
+  return cookedDishes
+    .filter((dish) => isSameMonth(dish.cookedDate, monthKey))
+    .sort((a, b) => b.cookedDate.localeCompare(a.cookedDate));
+}
+
+export function getCookingMonthlySummary(
+  cookedDishes: CookedDish[],
+  monthKey: string,
+): CookingMonthlySummary {
+  const monthly = getMonthlyCookedDishes(cookedDishes, monthKey);
+  const costs = monthly
+    .map((dish) => dish.totalCost)
+    .filter((cost): cost is number => cost !== null);
+  const totalCost = costs.reduce((sum, cost) => sum + cost, 0);
+
+  return {
+    dishCount: monthly.length,
+    totalCost,
+    averageCostPerDish: costs.length > 0 ? totalCost / costs.length : 0,
   };
 }
 

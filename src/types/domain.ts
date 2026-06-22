@@ -26,6 +26,15 @@ export type OpenedStatus = "unopened" | "opened";
 
 export type RecipeRating = 1 | 2 | 3 | 4 | 5;
 
+export type CookingCostStatus =
+  | "calculated"
+  | "missing_price"
+  | "missing_quantity"
+  | "unit_mismatch"
+  | "not_in_stock"
+  | "invalid_usage"
+  | "excluded";
+
 export type IngredientDictionaryItem = {
   id: string;
   displayName: string;
@@ -85,12 +94,44 @@ export type UserRecipe = {
   updatedAt: string;
 };
 
+export type CookedDishIngredient = {
+  id: string;
+  ingredientId: string | null;
+  ingredientName: string;
+  canonicalName: string;
+  usedQuantity: number;
+  unit: IngredientUnit;
+  stockQuantityBefore: number | null;
+  stockQuantityAfter: number | null;
+  stockUnit: IngredientUnit | null;
+  costAmount: number | null;
+  costStatus: CookingCostStatus;
+  note: string;
+};
+
+export type CookedDish = {
+  id: string;
+  name: string;
+  cookedDate: string;
+  servings: number;
+  ingredients: CookedDishIngredient[];
+  memo: string;
+  referenceRecipeTitle: string;
+  referenceRecipeUrl: string;
+  photoUrl: string;
+  totalCost: number | null;
+  costPerServing: number | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type HouseholdData = {
   schemaVersion: 1;
   transactions: Transaction[];
   ingredients: Ingredient[];
   userRecipes: UserRecipe[];
   userIngredientDictionary: IngredientDictionaryItem[];
+  cookedDishes: CookedDish[];
 };
 
 export const expenseCategories = [

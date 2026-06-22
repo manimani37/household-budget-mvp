@@ -29,9 +29,17 @@ import {
   getExpiringIngredients,
   getIngredientExpiryInfo,
   getExpiryTone,
+  getCookingMonthlySummary,
+  getMonthlyCookedDishes,
   getMonthlySummary,
   getMonthlyTransactions,
 } from "@/lib/calculations";
+import {
+  applyCookedDishToStock,
+  calculateCookedDishIngredients,
+  costStatusLabel,
+} from "@/lib/cooking";
+import type { CookingIngredientInput } from "@/lib/cooking";
 import { currentMonthKey, formatShortDate, formatYen, todayIso, toIsoDate } from "@/lib/date";
 import { buildExternalRecipeSearchIngredients } from "@/lib/externalRecipes";
 import type { ExternalRecipe } from "@/lib/externalRecipes";
@@ -48,6 +56,7 @@ import {
 import { buildRecipeSuggestions } from "@/lib/recipes";
 import type { RecipeSuggestion } from "@/lib/recipes";
 import type {
+  CookedDish,
   HouseholdData,
   Ingredient,
   IngredientDictionaryItem,
@@ -122,6 +131,26 @@ type IngredientDictionaryFormState = {
   compatibleIngredients: string;
   recipeCategories: string;
   tags: string;
+};
+
+type CookingFormItemState = {
+  id: string;
+  ingredientId: string;
+  ingredientName: string;
+  usedQuantity: string;
+  unit: IngredientUnit;
+  note: string;
+};
+
+type CookingFormState = {
+  name: string;
+  cookedDate: string;
+  servings: string;
+  memo: string;
+  referenceRecipeTitle: string;
+  referenceRecipeUrl: string;
+  photoUrl: string;
+  items: CookingFormItemState[];
 };
 
 type ReceiptItemDraft = {
@@ -206,6 +235,30 @@ function defaultIngredientDictionaryForm(): IngredientDictionaryFormState {
     compatibleIngredients: "",
     recipeCategories: "",
     tags: "",
+  };
+}
+
+function defaultCookingForm(): CookingFormState {
+  return {
+    name: "",
+    cookedDate: todayIso(),
+    servings: "1",
+    memo: "",
+    referenceRecipeTitle: "",
+    referenceRecipeUrl: "",
+    photoUrl: "",
+    items: [defaultCookingFormItem()],
+  };
+}
+
+function defaultCookingFormItem(name = ""): CookingFormItemState {
+  return {
+    id: createId("cook_item"),
+    ingredientId: "",
+    ingredientName: name,
+    usedQuantity: "",
+    unit: "個",
+    note: "",
   };
 }
 
@@ -324,6 +377,17 @@ function ingredientDictionaryFormFromItem(item: IngredientDictionaryItem): Ingre
     recipeCategories: item.recipeCategories.join("、"),
     tags: item.tags.join("、"),
   };
+}
+
+function cookingInputsFromForm(form: CookingFormState): CookingIngredientInput[] {
+  return form.items.map((item) => ({
+    id: item.id,
+    ingredientId: item.ingredientId,
+    ingredientName: item.ingredientName.trim(),
+    usedQuantity: Number(item.usedQuantity),
+    unit: item.unit,
+    note: item.note.trim(),
+  }));
 }
 
 function normalizeRecipeRating(value: string): RecipeRating {
@@ -592,6 +656,8 @@ export default function HomePage() {
   const [ingredientDictionaryForm, setIngredientDictionaryForm] =
     useState<IngredientDictionaryFormState>(defaultIngredientDictionaryForm);
   const [editingIngredientDictionaryId, setEditingIngredientDictionaryId] = useState<string | null>(null);
+  const [cookingForm, setCookingForm] = useState<CookingFormState>(defaultCookingForm);
+  const [selectedCookedDishId, setSelectedCookedDishId] = useState<string | null>(null);
 
   useEffect(() => {
     repository.load().then((savedData) => {
@@ -615,6 +681,14 @@ export default function HomePage() {
   const monthlyTransactions = useMemo(
     () => getMonthlyTransactions(data.transactions, selectedMonth),
     [data.transactions, selectedMonth],
+  );
+  const monthlyCookedDishes = useMemo(
+    () => getMonthlyCookedDishes(data.cookedDishes, selectedMonth),
+    [data.cookedDishes, selectedMonth],
+  );
+  const cookingSummary = useMemo(
+    () => getCookingMonthlySummary(data.cookedDishes, selectedMonth),
+    [data.cookedDishes, selectedMonth],
   );
   const activeIngredients = useMemo(
     () => getActiveIngredients(data.ingredients),
@@ -642,6 +716,15 @@ export default function HomePage() {
         (ingredient) => getCanonicalIngredient(ingredient.name, ingredientDictionary).isUnclassified,
       ),
     [activeIngredients, ingredientDictionary],
+  );
+  const cookingPreview = useMemo(
+    () =>
+      calculateCookedDishIngredients({
+        inputs: cookingInputsFromForm(cookingForm),
+        stockIngredients: activeIngredients,
+        userIngredientDictionary: data.userIngredientDictionary,
+      }),
+    [activeIngredients, cookingForm, data.userIngredientDictionary],
   );
   const expenseByCategory = useMemo(() => {
     return monthlyTransactions
@@ -719,7 +802,8 @@ export default function HomePage() {
     data.transactions.length > 0 ||
     data.ingredients.length > 0 ||
     data.userRecipes.length > 0 ||
-    data.userIngredientDictionary.length > 0;
+    data.userIngredientDictionary.length > 0 ||
+    data.cookedDishes.length > 0;
   const editingTransaction = editingTransactionId
     ? data.transactions.find((transaction) => transaction.id === editingTransactionId)
     : null;
@@ -992,6 +1076,128 @@ export default function HomePage() {
     setActiveTab("foods");
   }
 
+  function addCookingFormItem(name = "") {
+    setCookingForm((current) => ({
+      ...current,
+      items: [...current.items, defaultCookingFormItem(name)],
+    }));
+  }
+
+  function updateCookingFormItem(id: string, values: Partial<CookingFormItemState>) {
+    setCookingForm((current) => ({
+      ...current,
+      items: current.items.map((item) => (item.id === id ? { ...item, ...values } : item)),
+    }));
+  }
+
+  function removeCookingFormItem(id: string) {
+    setCookingForm((current) => ({
+      ...current,
+      items: current.items.length > 1 ? current.items.filter((item) => item.id !== id) : current.items,
+    }));
+  }
+
+  function startCookingFromRecipe({
+    title,
+    ingredients,
+    recipeUrl = "",
+  }: {
+    title: string;
+    ingredients: string[];
+    recipeUrl?: string;
+  }) {
+    const nextItems = ingredients.length > 0 ? ingredients : [""];
+    setCookingForm({
+      ...defaultCookingForm(),
+      name: title,
+      referenceRecipeTitle: title,
+      referenceRecipeUrl: recipeUrl,
+      items: nextItems.map((ingredient) => ({
+        ...defaultCookingFormItem(ingredient),
+        usedQuantity: "1",
+      })),
+    });
+    setActiveTab("recipes");
+  }
+
+  function addCookedDish(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const name = cookingForm.name.trim();
+    const servings = Number(cookingForm.servings);
+    if (!name || !Number.isFinite(servings) || servings <= 0) {
+      return;
+    }
+
+    const calculation = calculateCookedDishIngredients({
+      inputs: cookingInputsFromForm(cookingForm),
+      stockIngredients: activeIngredients,
+      userIngredientDictionary: data.userIngredientDictionary,
+    });
+    const stockChanges = calculation.ingredients.filter(
+      (ingredient) => ingredient.ingredientId && ingredient.stockQuantityAfter !== null,
+    );
+    const warningLines = [
+      ...calculation.warnings,
+      ...calculation.ingredients
+        .filter((ingredient) => ingredient.costStatus !== "calculated")
+        .map((ingredient) => `${ingredient.ingredientName}: ${costStatusLabel(ingredient.costStatus)}`),
+    ];
+    const confirmMessage = [
+      "この料理を登録し、食材ストックを減らします。",
+      ...stockChanges.map(
+        (ingredient) =>
+          `${ingredient.ingredientName}: ${ingredient.stockQuantityBefore ?? "-"}${ingredient.stockUnit ?? ""} -> ${ingredient.stockQuantityAfter ?? "-"}${ingredient.stockUnit ?? ""}`,
+      ),
+      ...(warningLines.length > 0 ? ["", "確認:", ...warningLines] : []),
+    ].join("\n");
+
+    if (!window.confirm(confirmMessage)) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const totalCost = calculation.totalCost;
+    const dish: CookedDish = {
+      id: createId("dish"),
+      name,
+      cookedDate: cookingForm.cookedDate || todayIso(),
+      servings,
+      ingredients: calculation.ingredients.map(({ exceedsStock, canDecrementStock, ...ingredient }) => ingredient),
+      memo: cookingForm.memo.trim(),
+      referenceRecipeTitle: cookingForm.referenceRecipeTitle.trim(),
+      referenceRecipeUrl: cookingForm.referenceRecipeUrl.trim(),
+      photoUrl: cookingForm.photoUrl.trim(),
+      totalCost,
+      costPerServing: totalCost !== null ? totalCost / servings : null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setData((current) => ({
+      ...current,
+      cookedDishes: [dish, ...current.cookedDishes],
+      ingredients: applyCookedDishToStock(current.ingredients, dish.ingredients),
+    }));
+    setCookingForm(defaultCookingForm());
+    setSelectedCookedDishId(dish.id);
+  }
+
+  function deleteCookedDish(id: string) {
+    if (!window.confirm("この料理記録を削除しますか？食材ストックは戻しません。")) {
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      cookedDishes: current.cookedDishes.filter((dish) => dish.id !== id),
+    }));
+
+    if (selectedCookedDishId === id) {
+      setSelectedCookedDishId(null);
+    }
+  }
+
   function startEditIngredient(ingredient: Ingredient) {
     setIngredientForm({
       name: ingredient.name,
@@ -1173,6 +1379,8 @@ export default function HomePage() {
     setRecipeForm(defaultRecipeForm());
     setEditingIngredientDictionaryId(null);
     setIngredientDictionaryForm(defaultIngredientDictionaryForm());
+    setCookingForm(defaultCookingForm());
+    setSelectedCookedDishId(null);
   }
 
   return (
@@ -1254,9 +1462,23 @@ export default function HomePage() {
               externalRecipeMessage={externalRecipeMessage}
               recipeForm={recipeForm}
               userRecipes={data.userRecipes}
+              cookingForm={cookingForm}
+              cookingPreview={cookingPreview}
+              activeIngredients={activeIngredients}
+              cookedDishes={monthlyCookedDishes}
+              cookingSummary={cookingSummary}
+              selectedCookedDishId={selectedCookedDishId}
               onAddRecipe={addUserRecipe}
               onRecipeFormChange={setRecipeForm}
               onDeleteUserRecipe={deleteUserRecipe}
+              onCookingSubmit={addCookedDish}
+              onCookingFormChange={setCookingForm}
+              onAddCookingItem={addCookingFormItem}
+              onUpdateCookingItem={updateCookingFormItem}
+              onRemoveCookingItem={removeCookingFormItem}
+              onStartCookingFromRecipe={startCookingFromRecipe}
+              onSelectCookedDish={setSelectedCookedDishId}
+              onDeleteCookedDish={deleteCookedDish}
               onChangeTab={setActiveTab}
             />
           )}
@@ -2505,9 +2727,23 @@ function RecipesView({
   externalRecipeMessage,
   recipeForm,
   userRecipes,
+  cookingForm,
+  cookingPreview,
+  activeIngredients,
+  cookedDishes,
+  cookingSummary,
+  selectedCookedDishId,
   onAddRecipe,
   onRecipeFormChange,
   onDeleteUserRecipe,
+  onCookingSubmit,
+  onCookingFormChange,
+  onAddCookingItem,
+  onUpdateCookingItem,
+  onRemoveCookingItem,
+  onStartCookingFromRecipe,
+  onSelectCookedDish,
+  onDeleteCookedDish,
   onChangeTab,
 }: {
   expiringIngredients: Ingredient[];
@@ -2517,9 +2753,23 @@ function RecipesView({
   externalRecipeMessage: string;
   recipeForm: RecipeFormState;
   userRecipes: UserRecipe[];
+  cookingForm: CookingFormState;
+  cookingPreview: ReturnType<typeof calculateCookedDishIngredients>;
+  activeIngredients: Ingredient[];
+  cookedDishes: CookedDish[];
+  cookingSummary: ReturnType<typeof getCookingMonthlySummary>;
+  selectedCookedDishId: string | null;
   onAddRecipe: (event: FormEvent<HTMLFormElement>) => void;
   onRecipeFormChange: (value: RecipeFormState | ((current: RecipeFormState) => RecipeFormState)) => void;
   onDeleteUserRecipe: (id: string) => void;
+  onCookingSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onCookingFormChange: (value: CookingFormState | ((current: CookingFormState) => CookingFormState)) => void;
+  onAddCookingItem: (name?: string) => void;
+  onUpdateCookingItem: (id: string, values: Partial<CookingFormItemState>) => void;
+  onRemoveCookingItem: (id: string) => void;
+  onStartCookingFromRecipe: (recipe: { title: string; ingredients: string[]; recipeUrl?: string }) => void;
+  onSelectCookedDish: (id: string | null) => void;
+  onDeleteCookedDish: (id: string) => void;
   onChangeTab: (tab: Tab) => void;
 }) {
   return (
@@ -2544,34 +2794,88 @@ function RecipesView({
         onChange={onRecipeFormChange}
         onDeleteRecipe={onDeleteUserRecipe}
       />
+      <CookingSection
+        form={cookingForm}
+        preview={cookingPreview}
+        activeIngredients={activeIngredients}
+        onSubmit={onCookingSubmit}
+        onChange={onCookingFormChange}
+        onAddItem={onAddCookingItem}
+        onUpdateItem={onUpdateCookingItem}
+        onRemoveItem={onRemoveCookingItem}
+      />
+      <CookedDishHistorySection
+        cookedDishes={cookedDishes}
+        summary={cookingSummary}
+        selectedDishId={selectedCookedDishId}
+        onSelectDish={onSelectCookedDish}
+        onDeleteDish={onDeleteCookedDish}
+      />
       <ExternalRecipeSection
         recipes={externalRecipes}
         status={externalRecipeStatus}
         message={externalRecipeMessage}
+        onCookRecipe={(recipe) =>
+          onStartCookingFromRecipe({
+            title: recipe.recipeTitle,
+            ingredients: recipe.recipeMaterial,
+            recipeUrl: recipe.recipeUrl,
+          })
+        }
       />
       <RecipeSection
         title="今日おすすめ"
         recipes={recipes.today}
+        onCookRecipe={(recipe) =>
+          onStartCookingFromRecipe({
+            title: recipe.title,
+            ingredients: [...new Set([...recipe.usedIngredients, ...recipe.missingIngredients])],
+          })
+        }
         emptyText="食材を登録すると、期限・相性・節約度を見て提案します。"
       />
       <RecipeSection
         title="期限が近い食材を使うレシピ"
         recipes={recipes.expiring}
+        onCookRecipe={(recipe) =>
+          onStartCookingFromRecipe({
+            title: recipe.title,
+            ingredients: [...new Set([...recipe.usedIngredients, ...recipe.missingIngredients])],
+          })
+        }
         emptyText="期限が近い食材を使う候補はまだありません。"
       />
       <RecipeSection
         title="手持ち食材だけで作れるレシピ"
         recipes={recipes.pantryOnly}
+        onCookRecipe={(recipe) =>
+          onStartCookingFromRecipe({
+            title: recipe.title,
+            ingredients: [...new Set([...recipe.usedIngredients, ...recipe.missingIngredients])],
+          })
+        }
         emptyText="手持ち食材だけで作れる候補はまだありません。"
       />
       <RecipeSection
         title="あと1品買えば作れるレシピ"
         recipes={recipes.oneMissing}
+        onCookRecipe={(recipe) =>
+          onStartCookingFromRecipe({
+            title: recipe.title,
+            ingredients: [...new Set([...recipe.usedIngredients, ...recipe.missingIngredients])],
+          })
+        }
         emptyText="あと1品の買い足しで作れる候補はまだありません。"
       />
       <RecipeSection
         title="自分で追加したレシピ"
         recipes={recipes.userRecipes}
+        onCookRecipe={(recipe) =>
+          onStartCookingFromRecipe({
+            title: recipe.title,
+            ingredients: [...new Set([...recipe.usedIngredients, ...recipe.missingIngredients])],
+          })
+        }
         emptyText="追加したレシピが食材ストックに合うとここに表示されます。"
       />
     </div>
@@ -2582,10 +2886,12 @@ function ExternalRecipeSection({
   recipes,
   status,
   message,
+  onCookRecipe,
 }: {
   recipes: ExternalRecipe[];
   status: ExternalRecipeStatus;
   message: string;
+  onCookRecipe?: (recipe: ExternalRecipe) => void;
 }) {
   return (
     <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
@@ -2609,13 +2915,21 @@ function ExternalRecipeSection({
         )}
 
         {status !== "loading" &&
-          recipes.map((recipe) => <ExternalRecipeCard key={recipe.recipeId} recipe={recipe} />)}
+          recipes.map((recipe) => (
+            <ExternalRecipeCard key={recipe.recipeId} recipe={recipe} onCookRecipe={onCookRecipe} />
+          ))}
       </div>
     </section>
   );
 }
 
-function ExternalRecipeCard({ recipe }: { recipe: ExternalRecipe }) {
+function ExternalRecipeCard({
+  recipe,
+  onCookRecipe,
+}: {
+  recipe: ExternalRecipe;
+  onCookRecipe?: (recipe: ExternalRecipe) => void;
+}) {
   return (
     <article className="overflow-hidden rounded-lg border border-ink/10 bg-paper">
       <div className="grid gap-0 md:grid-cols-[160px_1fr]">
@@ -2675,6 +2989,16 @@ function ExternalRecipeCard({ recipe }: { recipe: ExternalRecipe }) {
             </div>
           )}
 
+          {onCookRecipe && (
+            <button
+              type="button"
+              onClick={() => onCookRecipe(recipe)}
+              className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-2 text-sm font-bold text-white sm:mr-2 sm:w-auto"
+            >
+              <CheckCircle2 className="h-4 w-4" aria-hidden />
+              この料理を作った
+            </button>
+          )}
           <a
             href={recipe.recipeUrl}
             target="_blank"
@@ -2862,6 +3186,393 @@ function RecipeFormSection({
   );
 }
 
+function CookingSection({
+  form,
+  preview,
+  activeIngredients,
+  onSubmit,
+  onChange,
+  onAddItem,
+  onUpdateItem,
+  onRemoveItem,
+}: {
+  form: CookingFormState;
+  preview: ReturnType<typeof calculateCookedDishIngredients>;
+  activeIngredients: Ingredient[];
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onChange: (value: CookingFormState | ((current: CookingFormState) => CookingFormState)) => void;
+  onAddItem: (name?: string) => void;
+  onUpdateItem: (id: string, values: Partial<CookingFormItemState>) => void;
+  onRemoveItem: (id: string) => void;
+}) {
+  const servings = Number(form.servings);
+  const perServing =
+    preview.totalCost !== null && Number.isFinite(servings) && servings > 0
+      ? preview.totalCost / servings
+      : null;
+
+  return (
+    <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-leaf" aria-hidden />
+            <h3 className="text-lg font-bold">料理を作った</h3>
+          </div>
+          <p className="mt-1 text-sm leading-6 text-ink/65">
+            使った食材を登録すると、同じ単位のストックを自動で減らして原価を計算します。
+          </p>
+        </div>
+      </div>
+
+      <form onSubmit={onSubmit} className="mt-4 grid gap-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="sm:col-span-2">
+            <span className="mb-1 block text-sm font-bold text-ink/70">料理名</span>
+            <input
+              required
+              value={form.name}
+              onChange={(event) => onChange((current) => ({ ...current, name: event.target.value }))}
+              placeholder="例: 卵チャーハン"
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">作った日</span>
+            <input
+              required
+              type="date"
+              value={form.cookedDate}
+              onChange={(event) =>
+                onChange((current) => ({ ...current, cookedDate: event.target.value }))
+              }
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">何人前</span>
+            <input
+              required
+              type="number"
+              inputMode="decimal"
+              min="0.1"
+              step="0.1"
+              value={form.servings}
+              onChange={(event) =>
+                onChange((current) => ({ ...current, servings: event.target.value }))
+              }
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">参考にしたレシピ</span>
+            <input
+              value={form.referenceRecipeTitle}
+              onChange={(event) =>
+                onChange((current) => ({ ...current, referenceRecipeTitle: event.target.value }))
+              }
+              placeholder="レシピ名やサイト名"
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">写真URL・画像メモ</span>
+            <input
+              value={form.photoUrl}
+              onChange={(event) => onChange((current) => ({ ...current, photoUrl: event.target.value }))}
+              placeholder="写真URL、保存場所、メモなど"
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+          <label className="sm:col-span-2">
+            <span className="mb-1 block text-sm font-bold text-ink/70">参考レシピURL</span>
+            <input
+              value={form.referenceRecipeUrl}
+              onChange={(event) =>
+                onChange((current) => ({ ...current, referenceRecipeUrl: event.target.value }))
+              }
+              placeholder="https://..."
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+          <label className="sm:col-span-2">
+            <span className="mb-1 block text-sm font-bold text-ink/70">メモ</span>
+            <textarea
+              value={form.memo}
+              onChange={(event) => onChange((current) => ({ ...current, memo: event.target.value }))}
+              rows={3}
+              placeholder="味付け、次回の改善点、家族の反応など"
+              className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+        </div>
+
+        <div className="rounded-lg border border-ink/10 bg-paper p-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <h4 className="font-bold">使用した食材</h4>
+            <button
+              type="button"
+              onClick={() => onAddItem()}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm font-bold text-ink/70"
+            >
+              <Plus className="h-4 w-4" aria-hidden />
+              食材を追加
+            </button>
+          </div>
+
+          <div className="mt-3 grid gap-3">
+            {form.items.map((item) => (
+              <div key={item.id} className="grid gap-2 rounded-lg border border-ink/10 bg-white p-3 md:grid-cols-[1.2fr_1fr_0.8fr_0.9fr_auto]">
+                <label>
+                  <span className="mb-1 block text-xs font-bold text-ink/55">ストック</span>
+                  <select
+                    value={item.ingredientId}
+                    onChange={(event) => {
+                      const selected = activeIngredients.find((ingredient) => ingredient.id === event.target.value);
+                      onUpdateItem(item.id, {
+                        ingredientId: event.target.value,
+                        ingredientName: selected?.name ?? item.ingredientName,
+                        unit: selected?.unit ?? item.unit,
+                      });
+                    }}
+                    className="min-h-11 w-full rounded-lg border border-ink/15 bg-paper px-3 py-2"
+                  >
+                    <option value="">手入力</option>
+                    {activeIngredients.map((ingredient) => (
+                      <option key={ingredient.id} value={ingredient.id}>
+                        {ingredient.name} ({ingredient.quantity}{ingredient.unit})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs font-bold text-ink/55">食材名</span>
+                  <input
+                    value={item.ingredientName}
+                    onChange={(event) =>
+                      onUpdateItem(item.id, { ingredientName: event.target.value, ingredientId: "" })
+                    }
+                    placeholder="卵"
+                    className="min-h-11 w-full rounded-lg border border-ink/15 bg-paper px-3 py-2"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs font-bold text-ink/55">使用量</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="0.01"
+                    value={item.usedQuantity}
+                    onChange={(event) => onUpdateItem(item.id, { usedQuantity: event.target.value })}
+                    className="min-h-11 w-full rounded-lg border border-ink/15 bg-paper px-3 py-2"
+                  />
+                </label>
+                <label>
+                  <span className="mb-1 block text-xs font-bold text-ink/55">単位</span>
+                  <select
+                    value={item.unit}
+                    onChange={(event) =>
+                      onUpdateItem(item.id, { unit: event.target.value as IngredientUnit })
+                    }
+                    className="min-h-11 w-full rounded-lg border border-ink/15 bg-paper px-3 py-2"
+                  >
+                    {ingredientUnitOptions.map((unit) => (
+                      <option key={unit} value={unit}>
+                        {unit}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => onRemoveItem(item.id)}
+                  className="min-h-11 rounded-lg border border-ink/10 bg-paper px-3 text-sm font-bold text-ink/55 hover:text-tomato md:self-end"
+                >
+                  削除
+                </button>
+                <label className="md:col-span-5">
+                  <span className="mb-1 block text-xs font-bold text-ink/55">食材メモ</span>
+                  <input
+                    value={item.note}
+                    onChange={(event) => onUpdateItem(item.id, { note: event.target.value })}
+                    placeholder="半分だけ使った、皮をむいた後の重さなど"
+                    className="min-h-11 w-full rounded-lg border border-ink/15 bg-paper px-3 py-2"
+                  />
+                </label>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          <RecipeMetric label="合計原価" value={formatDishCost(preview.totalCost)} />
+          <RecipeMetric label="1人前あたり" value={formatDishCost(perServing)} />
+        </div>
+
+        {preview.ingredients.length > 0 && (
+          <div className="rounded-lg border border-ink/10 bg-white p-3">
+            <h4 className="font-bold">登録前の確認</h4>
+            <div className="mt-3 grid gap-2">
+              {preview.ingredients.map((ingredient) => (
+                <div key={ingredient.id} className="rounded-lg border border-ink/10 bg-paper p-3 text-sm">
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="font-bold">
+                      {ingredient.ingredientName}: {ingredient.usedQuantity}{ingredient.unit}
+                    </p>
+                    <p className="font-bold text-ink/70">
+                      {ingredient.costAmount !== null ? formatYen(ingredient.costAmount) : costStatusLabel(ingredient.costStatus)}
+                    </p>
+                  </div>
+                  <p className="mt-1 text-ink/60">
+                    {ingredient.stockQuantityBefore !== null && ingredient.stockQuantityAfter !== null
+                      ? `ストック ${ingredient.stockQuantityBefore}${ingredient.stockUnit} → ${ingredient.stockQuantityAfter}${ingredient.stockUnit}`
+                      : "ストックからの自動減算は行いません"}
+                  </p>
+                  {ingredient.exceedsStock && (
+                    <p className="mt-1 font-bold text-tomato">使用量がストック量を超えています</p>
+                  )}
+                </div>
+              ))}
+            </div>
+            {preview.warnings.length > 0 && (
+              <div className="mt-3 rounded-lg border border-honey/30 bg-honey/10 p-3 text-sm font-bold text-ink/75">
+                {preview.warnings.map((warning) => (
+                  <p key={warning}>{warning}</p>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <button
+          type="submit"
+          className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-3 font-bold text-white shadow-sm sm:w-auto"
+        >
+          <CheckCircle2 className="h-5 w-5" aria-hidden />
+          料理を登録してストックを減らす
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function CookedDishHistorySection({
+  cookedDishes,
+  summary,
+  selectedDishId,
+  onSelectDish,
+  onDeleteDish,
+}: {
+  cookedDishes: CookedDish[];
+  summary: ReturnType<typeof getCookingMonthlySummary>;
+  selectedDishId: string | null;
+  onSelectDish: (id: string | null) => void;
+  onDeleteDish: (id: string) => void;
+}) {
+  return (
+    <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+      <div className="flex items-center gap-2">
+        <ClipboardList className="h-5 w-5 text-sea" aria-hidden />
+        <h3 className="text-lg font-bold">作った料理の履歴</h3>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <MetricCard label="今月作った料理" value={`${summary.dishCount}品`} icon={Soup} tone="sea" />
+        <MetricCard label="今月の自炊原価" value={formatYen(summary.totalCost)} icon={CircleDollarSign} tone="leaf" />
+        <MetricCard label="1食平均" value={formatYen(summary.averageCostPerDish)} icon={TrendingDown} tone="tomato" />
+      </div>
+      <p className="mt-3 text-sm leading-6 text-ink/65">
+        外食との差額は、あとで外食基準額を設定できるようにするとより正確に出せます。
+      </p>
+
+      <div className="mt-4 grid gap-3">
+        {cookedDishes.length === 0 ? (
+          <EmptyState text="今月の料理記録はまだありません。" />
+        ) : (
+          cookedDishes.map((dish) => {
+            const isSelected = selectedDishId === dish.id;
+
+            return (
+              <article key={dish.id} className="rounded-lg border border-ink/10 bg-paper p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <p className="text-lg font-bold">{dish.name}</p>
+                    <p className="mt-1 text-sm text-ink/60">
+                      {formatShortDate(dish.cookedDate)} / {dish.ingredients.length}食材
+                    </p>
+                    {dish.memo && <p className="mt-2 text-sm leading-6 text-ink/70">{dish.memo}</p>}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-center sm:w-56">
+                    <RecipeMetric label="合計原価" value={formatDishCost(dish.totalCost)} />
+                    <RecipeMetric label="1人前" value={formatDishCost(dish.costPerServing)} />
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => onSelectDish(isSelected ? null : dish.id)}
+                    className="inline-flex min-h-11 items-center justify-center rounded-lg border border-ink/15 bg-white px-4 py-2 text-sm font-bold text-ink/70"
+                  >
+                    {isSelected ? "詳細を閉じる" : "詳細"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDeleteDish(dish.id)}
+                    className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-ink/10 bg-white px-4 py-2 text-sm font-bold text-ink/55 hover:text-tomato"
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                    削除
+                  </button>
+                </div>
+
+                {isSelected && (
+                  <div className="mt-3 rounded-lg border border-ink/10 bg-white p-3">
+                    <div className="grid gap-2">
+                      {dish.ingredients.map((ingredient) => (
+                        <div key={ingredient.id} className="flex flex-col gap-1 rounded-lg bg-paper p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+                          <p className="font-bold">
+                            {ingredient.ingredientName}: {ingredient.usedQuantity}{ingredient.unit}
+                          </p>
+                          <p className="text-ink/70">
+                            {ingredient.costAmount !== null
+                              ? formatYen(ingredient.costAmount)
+                              : costStatusLabel(ingredient.costStatus)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    {(dish.referenceRecipeTitle || dish.referenceRecipeUrl) && (
+                      <p className="mt-3 text-sm leading-6 text-ink/70">
+                        参考レシピ:{" "}
+                        {dish.referenceRecipeUrl ? (
+                          <a href={dish.referenceRecipeUrl} target="_blank" rel="noreferrer" className="font-bold text-sea underline">
+                            {dish.referenceRecipeTitle || dish.referenceRecipeUrl}
+                          </a>
+                        ) : (
+                          dish.referenceRecipeTitle
+                        )}
+                      </p>
+                    )}
+                    {dish.photoUrl && (
+                      <p className="mt-2 text-sm leading-6 text-ink/70">写真URL・画像メモ: {dish.photoUrl}</p>
+                    )}
+                  </div>
+                )}
+              </article>
+            );
+          })
+        )}
+      </div>
+    </section>
+  );
+}
+
+function formatDishCost(cost: number | null): string {
+  return cost === null ? "計算できません" : formatYen(Math.round(cost));
+}
+
 function SettingsView({
   selectedMonth,
   setSelectedMonth,
@@ -3044,10 +3755,12 @@ function RecipeSection({
   title,
   recipes,
   emptyText,
+  onCookRecipe,
 }: {
   title: string;
   recipes: RecipeSuggestion[];
   emptyText: string;
+  onCookRecipe?: (recipe: RecipeSuggestion) => void;
 }) {
   return (
     <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
@@ -3059,14 +3772,22 @@ function RecipeSection({
         {recipes.length === 0 ? (
           <EmptyState text={emptyText} />
         ) : (
-          recipes.map((recipe) => <RecipeCard key={recipe.id} recipe={recipe} />)
+          recipes.map((recipe) => (
+            <RecipeCard key={recipe.id} recipe={recipe} onCookRecipe={onCookRecipe} />
+          ))
         )}
       </div>
     </section>
   );
 }
 
-function RecipeCard({ recipe }: { recipe: RecipeSuggestion }) {
+function RecipeCard({
+  recipe,
+  onCookRecipe,
+}: {
+  recipe: RecipeSuggestion;
+  onCookRecipe?: (recipe: RecipeSuggestion) => void;
+}) {
   return (
     <article className="rounded-lg border border-ink/10 bg-paper p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -3132,6 +3853,16 @@ function RecipeCard({ recipe }: { recipe: RecipeSuggestion }) {
             </li>
           ))}
         </ol>
+      )}
+      {onCookRecipe && (
+        <button
+          type="button"
+          onClick={() => onCookRecipe(recipe)}
+          className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-2 text-sm font-bold text-white sm:w-auto"
+        >
+          <CheckCircle2 className="h-4 w-4" aria-hidden />
+          この料理を作った
+        </button>
       )}
     </article>
   );

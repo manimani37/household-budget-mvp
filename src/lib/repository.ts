@@ -1,4 +1,7 @@
 import type {
+  CookedDish,
+  CookedDishIngredient,
+  CookingCostStatus,
   ExpiryType,
   HouseholdData,
   Ingredient,
@@ -19,6 +22,7 @@ export const emptyHouseholdData: HouseholdData = {
   ingredients: [],
   userRecipes: [],
   userIngredientDictionary: [],
+  cookedDishes: [],
 };
 
 export interface HouseholdRepository {
@@ -48,6 +52,9 @@ export class LocalStorageHouseholdRepository implements HouseholdRepository {
       const userIngredientDictionary = Array.isArray(parsed.userIngredientDictionary)
         ? parsed.userIngredientDictionary.map((item) => normalizeIngredientDictionaryItem(item))
         : [];
+      const cookedDishes = Array.isArray(parsed.cookedDishes)
+        ? parsed.cookedDishes.map((dish) => normalizeCookedDish(dish))
+        : [];
 
       return {
         schemaVersion: 1,
@@ -55,6 +62,7 @@ export class LocalStorageHouseholdRepository implements HouseholdRepository {
         ingredients,
         userRecipes,
         userIngredientDictionary,
+        cookedDishes,
       };
     } catch {
       return emptyHouseholdData;
@@ -148,9 +156,78 @@ function normalizeIngredientDictionaryItem(value: unknown): IngredientDictionary
   };
 }
 
+function normalizeCookedDish(value: unknown): CookedDish {
+  const source = (value ?? {}) as Partial<CookedDish> & {
+    servings?: unknown;
+    totalCost?: unknown;
+    costPerServing?: unknown;
+  };
+  const now = new Date().toISOString();
+
+  return {
+    id: typeof source.id === "string" ? source.id : createId("dish"),
+    name: typeof source.name === "string" ? source.name : "",
+    cookedDate: typeof source.cookedDate === "string" ? source.cookedDate : "",
+    servings: normalizePositiveNumber(source.servings, 1),
+    ingredients: Array.isArray(source.ingredients)
+      ? source.ingredients.map((ingredient) => normalizeCookedDishIngredient(ingredient))
+      : [],
+    memo: typeof source.memo === "string" ? source.memo : "",
+    referenceRecipeTitle:
+      typeof source.referenceRecipeTitle === "string" ? source.referenceRecipeTitle : "",
+    referenceRecipeUrl:
+      typeof source.referenceRecipeUrl === "string" ? source.referenceRecipeUrl : "",
+    photoUrl: typeof source.photoUrl === "string" ? source.photoUrl : "",
+    totalCost: normalizeNullableNumber(source.totalCost),
+    costPerServing: normalizeNullableNumber(source.costPerServing),
+    createdAt: typeof source.createdAt === "string" ? source.createdAt : now,
+    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : now,
+  };
+}
+
+function normalizeCookedDishIngredient(value: unknown): CookedDishIngredient {
+  const source = (value ?? {}) as Partial<CookedDishIngredient> & {
+    usedQuantity?: unknown;
+    stockQuantityBefore?: unknown;
+    stockQuantityAfter?: unknown;
+    costAmount?: unknown;
+    unit?: unknown;
+    stockUnit?: unknown;
+    costStatus?: unknown;
+  };
+
+  return {
+    id: typeof source.id === "string" ? source.id : createId("dish_ingredient"),
+    ingredientId: typeof source.ingredientId === "string" ? source.ingredientId : null,
+    ingredientName: typeof source.ingredientName === "string" ? source.ingredientName : "",
+    canonicalName: typeof source.canonicalName === "string" ? source.canonicalName : "",
+    usedQuantity: normalizePositiveNumber(source.usedQuantity, 0),
+    unit: normalizeUnit(source.unit),
+    stockQuantityBefore: normalizeNullableNumber(source.stockQuantityBefore),
+    stockQuantityAfter: normalizeNullableNumber(source.stockQuantityAfter),
+    stockUnit:
+      typeof source.stockUnit === "string" && ingredientUnitOptions.includes(source.stockUnit as IngredientUnit)
+        ? (source.stockUnit as IngredientUnit)
+        : null,
+    costAmount: normalizeNullableNumber(source.costAmount),
+    costStatus: normalizeCookingCostStatus(source.costStatus),
+    note: typeof source.note === "string" ? source.note : "",
+  };
+}
+
 function normalizePrice(value: unknown): number {
   const price = typeof value === "number" ? value : Number(value);
   return Number.isFinite(price) && price > 0 ? price : 0;
+}
+
+function normalizePositiveNumber(value: unknown, fallback: number): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : fallback;
+}
+
+function normalizeNullableNumber(value: unknown): number | null {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : null;
 }
 
 function normalizeStringArray(value: unknown): string[] {
@@ -181,6 +258,22 @@ function normalizeRecipeRating(value: unknown): RecipeRating {
   }
 
   return 3;
+}
+
+function normalizeCookingCostStatus(value: unknown): CookingCostStatus {
+  if (
+    value === "calculated" ||
+    value === "missing_price" ||
+    value === "missing_quantity" ||
+    value === "unit_mismatch" ||
+    value === "not_in_stock" ||
+    value === "invalid_usage" ||
+    value === "excluded"
+  ) {
+    return value;
+  }
+
+  return "excluded";
 }
 
 function normalizeUnit(value: unknown): IngredientUnit {

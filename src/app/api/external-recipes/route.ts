@@ -16,17 +16,44 @@ const CATEGORY_LIST_URL =
 const CATEGORY_RANKING_URL =
   "https://openapi.rakuten.co.jp/recipems/api/Recipe/CategoryRanking/20170426";
 const FALLBACK_MESSAGE = "外部レシピを取得できませんでした。手持ちレシピから提案します。";
+const RAKUTEN_ENV_NAMES = {
+  applicationId: "RAKUTEN_APPLICATION_ID",
+  accessKey: "RAKUTEN_ACCESS_KEY",
+} as const;
 
 export const dynamic = "force-dynamic";
 
-export async function POST(request: Request) {
-  const applicationId = process.env.RAKUTEN_APPLICATION_ID;
-  const accessKey = process.env.RAKUTEN_ACCESS_KEY;
+type RakutenEnvironment = {
+  applicationId: string;
+  accessKey: string;
+  missingNames: string[];
+};
 
-  if (!applicationId || !accessKey) {
+export async function GET() {
+  const environment = readRakutenEnvironment();
+
+  return NextResponse.json({
+    configured: environment.missingNames.length === 0,
+    requiredEnvNames: Object.values(RAKUTEN_ENV_NAMES),
+    missingEnvNames: environment.missingNames,
+    hasApplicationId: Boolean(environment.applicationId),
+    hasAccessKey: Boolean(environment.accessKey),
+    note: "APIキーの値は返していません。この確認はサーバー側の環境変数読み込み状態だけを示します。",
+  });
+}
+
+export async function POST(request: Request) {
+  const environment = readRakutenEnvironment();
+
+  if (environment.missingNames.length > 0) {
     return NextResponse.json({
       recipes: [],
-      message: "楽天レシピAPIの環境変数が未設定です。手持ちレシピから提案します。",
+      message: buildMissingEnvironmentMessage(environment.missingNames),
+      envStatus: {
+        configured: false,
+        requiredEnvNames: Object.values(RAKUTEN_ENV_NAMES),
+        missingEnvNames: environment.missingNames,
+      },
     });
   }
 
@@ -42,14 +69,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ recipes: [], message: "" });
     }
 
-    const categories = await fetchRakutenCategories(applicationId, accessKey);
+    const categories = await fetchRakutenCategories(environment.applicationId, environment.accessKey);
     const selectedCategories = pickRakutenRecipeCategories(categories, ingredients, 4);
     const targetCategories =
       selectedCategories.length > 0 ? selectedCategories : categories.slice(0, 1);
     const rankingRecipes = (
       await Promise.all(
         targetCategories.map((category) =>
-          fetchRakutenRecipeRanking(applicationId, accessKey, category),
+          fetchRakutenRecipeRanking(environment.applicationId, environment.accessKey, category),
         ),
       )
     ).flat();
@@ -67,6 +94,33 @@ export async function POST(request: Request) {
     console.error("Failed to fetch external recipes", error);
     return NextResponse.json({ recipes: [], message: FALLBACK_MESSAGE });
   }
+}
+
+function readRakutenEnvironment(): RakutenEnvironment {
+  const applicationId = (process.env[RAKUTEN_ENV_NAMES.applicationId] ?? "").trim();
+  const accessKey = (process.env[RAKUTEN_ENV_NAMES.accessKey] ?? "").trim();
+  const missingNames: string[] = [];
+
+  if (!applicationId) {
+    missingNames.push(RAKUTEN_ENV_NAMES.applicationId);
+  }
+  if (!accessKey) {
+    missingNames.push(RAKUTEN_ENV_NAMES.accessKey);
+  }
+
+  return {
+    applicationId,
+    accessKey,
+    missingNames,
+  };
+}
+
+function buildMissingEnvironmentMessage(missingNames: string[]): string {
+  return [
+    "楽天レシピAPIの環境変数が未設定です。手持ちレシピから提案します。",
+    `不足: ${missingNames.join(", ")}`,
+    "Vercelで設定後、Production/Previewの対象環境を確認して再デプロイしてください。",
+  ].join(" ");
 }
 
 async function fetchRakutenCategories(

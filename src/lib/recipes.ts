@@ -1,31 +1,17 @@
 import { getActiveIngredients, getIngredientExpiryDays } from "@/lib/calculations";
+import {
+  areCompatibleIngredients,
+  getCanonicalIngredient,
+  getIngredientTags,
+  mergeIngredientDictionaries,
+} from "@/lib/ingredients";
+import type { IngredientRecognition } from "@/lib/ingredients";
 import type {
   Ingredient,
+  IngredientDictionaryItem,
   RecipeRating,
-  StorageLocation,
   UserRecipe,
 } from "@/types/domain";
-
-export type IngredientDictionaryEntry = {
-  id: string;
-  canonicalName: string;
-  aliases: string[];
-  category: string;
-  compatibleIngredients: string[];
-  commonGenres: string[];
-  defaultStorageLocation: StorageLocation;
-  estimatedExpiryDays: number;
-};
-
-export type IngredientRecognition = {
-  originalName: string;
-  normalizedName: string;
-  canonicalName: string;
-  category: string;
-  dictionaryId: string | null;
-  defaultStorageLocation: StorageLocation;
-  estimatedExpiryDays: number | null;
-};
 
 export type RecipeSuggestion = {
   id: string;
@@ -77,199 +63,6 @@ type IngredientMatch = {
   requestedName: string;
   stock: StockIngredient;
 };
-
-export const ingredientDictionary: IngredientDictionaryEntry[] = [
-  {
-    id: "egg",
-    canonicalName: "卵",
-    aliases: ["たまご", "玉子", "egg", "eggs"],
-    category: "卵・乳製品",
-    compatibleIngredients: ["ねぎ", "玉ねぎ", "ベーコン", "ハム", "ご飯", "チーズ"],
-    commonGenres: ["朝食", "丼", "炒め物", "簡単料理"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 14,
-  },
-  {
-    id: "negi",
-    canonicalName: "ねぎ",
-    aliases: ["ネギ", "青ねぎ", "白ねぎ", "長ねぎ", "長ネギ", "葱", "green onion", "scallion"],
-    category: "野菜",
-    compatibleIngredients: ["卵", "豆腐", "豚肉", "鶏肉", "ご飯", "味噌"],
-    commonGenres: ["和食", "炒め物", "スープ"],
-    defaultStorageLocation: "vegetable_room",
-    estimatedExpiryDays: 7,
-  },
-  {
-    id: "onion",
-    canonicalName: "玉ねぎ",
-    aliases: ["玉葱", "たまねぎ", "タマネギ", "onion"],
-    category: "野菜",
-    compatibleIngredients: ["卵", "鶏肉", "豚肉", "牛肉", "じゃがいも", "チーズ"],
-    commonGenres: ["炒め物", "スープ", "丼", "洋食"],
-    defaultStorageLocation: "room",
-    estimatedExpiryDays: 21,
-  },
-  {
-    id: "rice",
-    canonicalName: "ご飯",
-    aliases: ["ごはん", "御飯", "白米", "米", "ライス", "rice"],
-    category: "主食",
-    compatibleIngredients: ["卵", "ねぎ", "豚肉", "鶏肉", "ハム", "味噌"],
-    commonGenres: ["丼", "朝食", "炒め物", "和食"],
-    defaultStorageLocation: "room",
-    estimatedExpiryDays: 30,
-  },
-  {
-    id: "pork",
-    canonicalName: "豚肉",
-    aliases: ["豚", "ぶた肉", "豚こま", "豚バラ", "pork"],
-    category: "肉・魚",
-    compatibleIngredients: ["ねぎ", "玉ねぎ", "もやし", "キャベツ", "味噌", "ご飯"],
-    commonGenres: ["炒め物", "丼", "和食", "節約料理"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 3,
-  },
-  {
-    id: "chicken",
-    canonicalName: "鶏肉",
-    aliases: ["鶏", "とり肉", "鳥肉", "チキン", "chicken"],
-    category: "肉・魚",
-    compatibleIngredients: ["卵", "玉ねぎ", "ねぎ", "ご飯", "じゃがいも"],
-    commonGenres: ["丼", "炒め物", "和食", "洋食"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 3,
-  },
-  {
-    id: "beef",
-    canonicalName: "牛肉",
-    aliases: ["牛", "ぎゅう肉", "ビーフ", "beef"],
-    category: "肉・魚",
-    compatibleIngredients: ["玉ねぎ", "ご飯", "じゃがいも", "ねぎ"],
-    commonGenres: ["丼", "炒め物", "洋食"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 3,
-  },
-  {
-    id: "meat",
-    canonicalName: "肉",
-    aliases: ["肉類", "meat"],
-    category: "肉・魚",
-    compatibleIngredients: ["ねぎ", "玉ねぎ", "キャベツ", "もやし", "ご飯"],
-    commonGenres: ["炒め物", "丼", "節約料理"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 3,
-  },
-  {
-    id: "bacon",
-    canonicalName: "ベーコン",
-    aliases: ["bacon"],
-    category: "加工食品",
-    compatibleIngredients: ["卵", "チーズ", "玉ねぎ", "キャベツ", "トマト"],
-    commonGenres: ["朝食", "洋食", "スープ"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 7,
-  },
-  {
-    id: "ham",
-    canonicalName: "ハム",
-    aliases: ["ham", "ロースハム"],
-    category: "加工食品",
-    compatibleIngredients: ["卵", "チーズ", "ご飯", "キャベツ"],
-    commonGenres: ["朝食", "炒め物", "簡単料理"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 7,
-  },
-  {
-    id: "cheese",
-    canonicalName: "チーズ",
-    aliases: ["cheese", "スライスチーズ", "ピザ用チーズ"],
-    category: "卵・乳製品",
-    compatibleIngredients: ["卵", "ベーコン", "ハム", "トマト", "じゃがいも"],
-    commonGenres: ["洋食", "朝食", "簡単料理"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 14,
-  },
-  {
-    id: "tofu",
-    canonicalName: "豆腐",
-    aliases: ["とうふ", "トウフ", "tofu", "絹豆腐", "木綿豆腐"],
-    category: "大豆製品",
-    compatibleIngredients: ["ねぎ", "味噌", "卵", "豚肉"],
-    commonGenres: ["和食", "スープ", "節約料理"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 4,
-  },
-  {
-    id: "miso",
-    canonicalName: "味噌",
-    aliases: ["みそ", "ミソ", "miso"],
-    category: "調味料",
-    compatibleIngredients: ["ねぎ", "豆腐", "豚肉", "キャベツ", "ご飯"],
-    commonGenres: ["和食", "スープ"],
-    defaultStorageLocation: "opened_fridge",
-    estimatedExpiryDays: 60,
-  },
-  {
-    id: "cabbage",
-    canonicalName: "キャベツ",
-    aliases: ["きゃべつ", "cabbage"],
-    category: "野菜",
-    compatibleIngredients: ["豚肉", "ベーコン", "卵", "もやし", "味噌"],
-    commonGenres: ["炒め物", "スープ", "節約料理"],
-    defaultStorageLocation: "vegetable_room",
-    estimatedExpiryDays: 7,
-  },
-  {
-    id: "carrot",
-    canonicalName: "にんじん",
-    aliases: ["人参", "ニンジン", "carrot"],
-    category: "野菜",
-    compatibleIngredients: ["玉ねぎ", "じゃがいも", "鶏肉", "キャベツ"],
-    commonGenres: ["スープ", "炒め物", "洋食"],
-    defaultStorageLocation: "vegetable_room",
-    estimatedExpiryDays: 14,
-  },
-  {
-    id: "potato",
-    canonicalName: "じゃがいも",
-    aliases: ["じゃが芋", "ジャガイモ", "馬鈴薯", "potato"],
-    category: "野菜",
-    compatibleIngredients: ["玉ねぎ", "チーズ", "ベーコン", "鶏肉", "にんじん"],
-    commonGenres: ["洋食", "スープ", "節約料理"],
-    defaultStorageLocation: "room",
-    estimatedExpiryDays: 21,
-  },
-  {
-    id: "bean-sprout",
-    canonicalName: "もやし",
-    aliases: ["モヤシ", "bean sprout", "bean sprouts"],
-    category: "野菜",
-    compatibleIngredients: ["豚肉", "卵", "ねぎ", "キャベツ"],
-    commonGenres: ["炒め物", "節約料理", "簡単料理"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 3,
-  },
-  {
-    id: "mushroom",
-    canonicalName: "きのこ",
-    aliases: ["キノコ", "しめじ", "しいたけ", "椎茸", "えのき", "舞茸", "mushroom"],
-    category: "野菜",
-    compatibleIngredients: ["卵", "ご飯", "鶏肉", "玉ねぎ", "味噌"],
-    commonGenres: ["和食", "炒め物", "スープ"],
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: 5,
-  },
-  {
-    id: "tomato",
-    canonicalName: "トマト",
-    aliases: ["とまと", "tomato", "ミニトマト"],
-    category: "野菜",
-    compatibleIngredients: ["卵", "チーズ", "ベーコン", "玉ねぎ"],
-    commonGenres: ["洋食", "スープ", "朝食"],
-    defaultStorageLocation: "vegetable_room",
-    estimatedExpiryDays: 7,
-  },
-];
 
 const builtinRecipes: RecipeDefinition[] = [
   {
@@ -394,56 +187,21 @@ const builtinRecipes: RecipeDefinition[] = [
 export function buildRecipeSuggestions(
   ingredients: Ingredient[],
   userRecipes: UserRecipe[] = [],
+  userIngredientDictionary: IngredientDictionaryItem[] = [],
 ): RecipeSuggestionGroups {
+  const dictionary = mergeIngredientDictionaries(userIngredientDictionary);
   const stock = getActiveIngredients(ingredients).map((ingredient) => ({
     ingredient,
-    recognition: recognizeIngredient(ingredient.name),
+    recognition: getCanonicalIngredient(ingredient.name, dictionary),
     expiryDays: getIngredientExpiryDays(ingredient),
   }));
   const recipes = [...builtinRecipes, ...userRecipes.map(toUserRecipeDefinition)];
   const suggestions = recipes
-    .map((recipe) => buildSuggestion(recipe, stock))
+    .map((recipe) => buildSuggestion(recipe, stock, dictionary))
     .filter((suggestion) => suggestion.usedIngredients.length > 0)
     .sort((a, b) => b.score - a.score || a.cookingTimeMinutes - b.cookingTimeMinutes);
 
   return groupSuggestions(suggestions.length > 0 ? suggestions : buildFallbackSuggestions(stock));
-}
-
-export function recognizeIngredient(name: string): IngredientRecognition {
-  const normalizedName = normalizeIngredientName(name);
-  const exactMatch = ingredientDictionary.find((entry) =>
-    getSearchNames(entry).some((alias) => alias === normalizedName),
-  );
-
-  if (exactMatch) {
-    return recognitionFromEntry(name, normalizedName, exactMatch);
-  }
-
-  const partialMatch = ingredientDictionary
-    .flatMap((entry) => getSearchNames(entry).map((alias) => ({ entry, alias })))
-    .filter(({ alias }) => alias.length >= 2)
-    .sort((a, b) => b.alias.length - a.alias.length)
-    .find(({ alias }) => normalizedName.includes(alias) || alias.includes(normalizedName));
-
-  if (partialMatch) {
-    return recognitionFromEntry(name, normalizedName, partialMatch.entry);
-  }
-
-  return {
-    originalName: name,
-    normalizedName,
-    canonicalName: name.trim(),
-    category: inferIngredientCategory(normalizedName),
-    dictionaryId: null,
-    defaultStorageLocation: "fridge",
-    estimatedExpiryDays: null,
-  };
-}
-
-export function normalizeIngredientName(value: string): string {
-  return toHiragana(value.normalize("NFKC").toLowerCase())
-    .replace(/[ \t\r\n　・･,、。.\-_/／\\()[\]（）「」『』【】]/g, "")
-    .trim();
 }
 
 function toUserRecipeDefinition(recipe: UserRecipe): RecipeDefinition {
@@ -464,17 +222,22 @@ function toUserRecipeDefinition(recipe: UserRecipe): RecipeDefinition {
   };
 }
 
-function buildSuggestion(recipe: RecipeDefinition, stock: StockIngredient[]): RecipeSuggestion {
+function buildSuggestion(
+  recipe: RecipeDefinition,
+  stock: StockIngredient[],
+  dictionary: IngredientDictionaryItem[],
+): RecipeSuggestion {
   const usedStockIds = new Set<string>();
-  const requiredMatches = matchRecipeIngredients(recipe.requiredIngredients, stock, usedStockIds);
-  const optionalMatches = matchRecipeIngredients(recipe.optionalIngredients, stock, usedStockIds);
+  const requiredMatches = matchRecipeIngredients(recipe.requiredIngredients, stock, usedStockIds, dictionary);
+  const optionalMatches = matchRecipeIngredients(recipe.optionalIngredients, stock, usedStockIds, dictionary);
   const matches = [...requiredMatches.matches, ...optionalMatches.matches];
   const usedIngredients = unique(matches.map((match) => match.stock.ingredient.name));
   const missingIngredients = unique(requiredMatches.missing);
   const usesExpiringIngredient = matches.some(
     (match) => match.stock.expiryDays !== null && match.stock.expiryDays <= 5,
   );
-  const compatibilityScore = countCompatiblePairs(matches);
+  const compatibilityScore = countCompatiblePairs(matches, dictionary);
+  const tagScore = countUsefulTags(matches, dictionary);
   const canCookWithStock = missingIngredients.length === 0;
   const oneMissing = missingIngredients.length === 1;
   const score =
@@ -482,6 +245,7 @@ function buildSuggestion(recipe: RecipeDefinition, stock: StockIngredient[]): Re
     requiredMatches.matches.length * 8 +
     optionalMatches.matches.length * 4 +
     compatibilityScore * 7 +
+    tagScore * 4 +
     recipe.easeLevel * 3 +
     recipe.savingLevel * 3 +
     (usesExpiringIngredient ? 20 : 0) +
@@ -506,6 +270,7 @@ function buildSuggestion(recipe: RecipeDefinition, stock: StockIngredient[]): Re
       missingIngredients,
       usesExpiringIngredient,
       compatibilityScore,
+      tagScore,
       easeLevel: recipe.easeLevel,
       savingLevel: recipe.savingLevel,
       source: recipe.source,
@@ -520,13 +285,14 @@ function matchRecipeIngredients(
   names: string[],
   stock: StockIngredient[],
   usedStockIds: Set<string>,
+  dictionary: IngredientDictionaryItem[],
 ): { matches: IngredientMatch[]; missing: string[] } {
   const matches: IngredientMatch[] = [];
   const missing: string[] = [];
 
   names.forEach((name) => {
     const match = stock.find((candidate) => {
-      return !usedStockIds.has(candidate.ingredient.id) && matchesRecipeIngredient(name, candidate);
+      return !usedStockIds.has(candidate.ingredient.id) && matchesRecipeIngredient(name, candidate, dictionary);
     });
 
     if (!match) {
@@ -541,8 +307,12 @@ function matchRecipeIngredients(
   return { matches, missing };
 }
 
-function matchesRecipeIngredient(name: string, stock: StockIngredient): boolean {
-  const target = recognizeIngredient(name);
+function matchesRecipeIngredient(
+  name: string,
+  stock: StockIngredient,
+  dictionary: IngredientDictionaryItem[],
+): boolean {
+  const target = getCanonicalIngredient(name, dictionary);
 
   if (target.dictionaryId && target.dictionaryId === stock.recognition.dictionaryId) {
     return true;
@@ -552,11 +322,7 @@ function matchesRecipeIngredient(name: string, stock: StockIngredient): boolean 
     return true;
   }
 
-  if (
-    target.dictionaryId === null &&
-    target.category !== "その他" &&
-    target.category === stock.recognition.category
-  ) {
+  if (target.groupId && target.groupId === stock.recognition.groupId) {
     return true;
   }
 
@@ -575,6 +341,7 @@ function buildReason({
   missingIngredients,
   usesExpiringIngredient,
   compatibilityScore,
+  tagScore,
   easeLevel,
   savingLevel,
   source,
@@ -583,6 +350,7 @@ function buildReason({
   missingIngredients: string[];
   usesExpiringIngredient: boolean;
   compatibilityScore: number;
+  tagScore: number;
   easeLevel: RecipeRating;
   savingLevel: RecipeRating;
   source: RecipeSuggestion["source"];
@@ -601,6 +369,10 @@ function buildReason({
 
   if (compatibilityScore > 0) {
     reasons.push("食材辞書で相性の良い組み合わせが見つかった");
+  }
+
+  if (tagScore > 0) {
+    reasons.push("簡単・節約向きの食材タグが合っている");
   }
 
   if (usedCount >= 3) {
@@ -622,15 +394,19 @@ function buildReason({
   return reasons.length > 0 ? reasons.join(" / ") : "登録食材と必要食材が近い";
 }
 
-function countCompatiblePairs(matches: IngredientMatch[]): number {
+function countCompatiblePairs(
+  matches: IngredientMatch[],
+  dictionary: IngredientDictionaryItem[],
+): number {
   let score = 0;
 
   for (let index = 0; index < matches.length; index += 1) {
     for (let nextIndex = index + 1; nextIndex < matches.length; nextIndex += 1) {
       if (
-        areCompatible(
+        areCompatibleIngredients(
           matches[index].stock.recognition.canonicalName,
           matches[nextIndex].stock.recognition.canonicalName,
+          dictionary,
         )
       ) {
         score += 1;
@@ -641,14 +417,15 @@ function countCompatiblePairs(matches: IngredientMatch[]): number {
   return score;
 }
 
-function areCompatible(a: string, b: string): boolean {
-  const first = findEntryByCanonical(a);
-  const second = findEntryByCanonical(b);
-
-  return Boolean(
-    first?.compatibleIngredients.some((name) => normalizeIngredientName(name) === normalizeIngredientName(b)) ||
-      second?.compatibleIngredients.some((name) => normalizeIngredientName(name) === normalizeIngredientName(a)),
+function countUsefulTags(
+  matches: IngredientMatch[],
+  dictionary: IngredientDictionaryItem[],
+): number {
+  const tags = unique(
+    matches.flatMap((match) => getIngredientTags(match.stock.recognition.canonicalName, dictionary)),
   );
+
+  return tags.filter((tag) => tag === "簡単" || tag === "節約" || tag === "常備").length;
 }
 
 function groupSuggestions(suggestions: RecipeSuggestion[]): RecipeSuggestionGroups {
@@ -696,59 +473,6 @@ function buildFallbackSuggestions(stock: StockIngredient[]): RecipeSuggestion[] 
       score: 30,
     },
   ];
-}
-
-function recognitionFromEntry(
-  originalName: string,
-  normalizedName: string,
-  entry: IngredientDictionaryEntry,
-): IngredientRecognition {
-  return {
-    originalName,
-    normalizedName,
-    canonicalName: entry.canonicalName,
-    category: entry.category,
-    dictionaryId: entry.id,
-    defaultStorageLocation: entry.defaultStorageLocation,
-    estimatedExpiryDays: entry.estimatedExpiryDays,
-  };
-}
-
-function getSearchNames(entry: IngredientDictionaryEntry): string[] {
-  return [entry.canonicalName, ...entry.aliases].map(normalizeIngredientName);
-}
-
-function findEntryByCanonical(name: string): IngredientDictionaryEntry | undefined {
-  const normalizedName = normalizeIngredientName(name);
-  return ingredientDictionary.find(
-    (entry) => normalizeIngredientName(entry.canonicalName) === normalizedName,
-  );
-}
-
-function inferIngredientCategory(normalizedName: string): string {
-  if (/(肉|豚|鶏|鳥|牛|魚|鮭|さば|まぐろ|chicken|pork|beef|fish)/.test(normalizedName)) {
-    return "肉・魚";
-  }
-  if (/(卵|たまご|egg|牛乳|乳|チーズ|cheese|ヨーグルト)/.test(normalizedName)) {
-    return "卵・乳製品";
-  }
-  if (/(米|ごはん|ご飯|パン|麺|うどん|そば|パスタ|rice|bread|pasta)/.test(normalizedName)) {
-    return "主食";
-  }
-  if (/(野菜|ねぎ|玉ねぎ|人参|にんじん|芋|キャベツ|トマト|レタス|もやし|きのこ)/.test(normalizedName)) {
-    return "野菜";
-  }
-  if (/(味噌|みそ|醤油|しょうゆ|ソース|塩|砂糖|oil|miso)/.test(normalizedName)) {
-    return "調味料";
-  }
-
-  return "その他";
-}
-
-function toHiragana(value: string): string {
-  return value.replace(/[\u30a1-\u30f6]/g, (char) =>
-    String.fromCharCode(char.charCodeAt(0) - 0x60),
-  );
 }
 
 function unique(values: string[]): string[] {

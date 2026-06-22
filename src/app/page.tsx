@@ -33,6 +33,13 @@ import {
   getMonthlyTransactions,
 } from "@/lib/calculations";
 import { currentMonthKey, formatShortDate, formatYen, todayIso, toIsoDate } from "@/lib/date";
+import { buildExternalRecipeSearchIngredients } from "@/lib/externalRecipes";
+import type { ExternalRecipe } from "@/lib/externalRecipes";
+import {
+  getCanonicalIngredient,
+  initialIngredientDictionary,
+  mergeIngredientDictionaries,
+} from "@/lib/ingredients";
 import {
   createId,
   emptyHouseholdData,
@@ -43,6 +50,7 @@ import type { RecipeSuggestion } from "@/lib/recipes";
 import type {
   HouseholdData,
   Ingredient,
+  IngredientDictionaryItem,
   IngredientUnit,
   IngredientStatus,
   ExpiryType,
@@ -67,6 +75,8 @@ import {
 type Tab = "home" | "record" | "foods" | "recipes" | "settings";
 
 type RecordMode = "manual" | "receipt";
+
+type ExternalRecipeStatus = "idle" | "loading" | "ready" | "error";
 
 type TransactionFormState = {
   type: TransactionType;
@@ -101,6 +111,17 @@ type RecipeFormState = {
   genre: string;
   easeLevel: string;
   savingLevel: string;
+};
+
+type IngredientDictionaryFormState = {
+  displayName: string;
+  aliases: string;
+  category: string;
+  storageType: StorageLocation;
+  defaultExpiryDays: string;
+  compatibleIngredients: string;
+  recipeCategories: string;
+  tags: string;
 };
 
 type ReceiptItemDraft = {
@@ -175,6 +196,19 @@ function defaultRecipeForm(): RecipeFormState {
   };
 }
 
+function defaultIngredientDictionaryForm(): IngredientDictionaryFormState {
+  return {
+    displayName: "",
+    aliases: "",
+    category: "未分類",
+    storageType: "fridge",
+    defaultExpiryDays: "7",
+    compatibleIngredients: "",
+    recipeCategories: "",
+    tags: "",
+  };
+}
+
 function defaultReceiptDraft(): ReceiptDraft {
   return {
     storeName: "",
@@ -240,11 +274,56 @@ function buildUserRecipeFromForm(form: RecipeFormState, now: string): UserRecipe
   };
 }
 
+function buildIngredientDictionaryItemFromForm(
+  form: IngredientDictionaryFormState,
+  now: string,
+): IngredientDictionaryItem | null {
+  const displayName = form.displayName.trim();
+  if (!displayName) {
+    return null;
+  }
+
+  const defaultExpiryDays = Math.max(0, Math.round(Number(form.defaultExpiryDays) || 7));
+
+  return {
+    id: createId("ingredient_dict"),
+    displayName,
+    aliases: splitDictionaryValues(form.aliases),
+    category: form.category.trim() || "未分類",
+    storageType: form.storageType,
+    defaultExpiryDays,
+    compatibleIngredients: splitDictionaryValues(form.compatibleIngredients),
+    recipeCategories: splitDictionaryValues(form.recipeCategories),
+    tags: splitDictionaryValues(form.tags),
+    groupId: createId("ingredient_group"),
+    isUserDefined: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
 function splitRecipeIngredients(value: string): string[] {
+  return splitDictionaryValues(value);
+}
+
+function splitDictionaryValues(value: string): string[] {
   return value
     .split(/[\n,、]+/)
     .map((item) => item.trim())
     .filter((item, index, array) => item && array.indexOf(item) === index);
+}
+
+function ingredientDictionaryFormFromItem(item: IngredientDictionaryItem): IngredientDictionaryFormState {
+  return {
+    displayName: item.displayName,
+    aliases: item.aliases.join("、"),
+    category: item.category,
+    storageType: item.storageType,
+    defaultExpiryDays: String(item.defaultExpiryDays),
+    compatibleIngredients: item.compatibleIngredients.join("、"),
+    recipeCategories: item.recipeCategories.join("、"),
+    tags: item.tags.join("、"),
+  };
 }
 
 function normalizeRecipeRating(value: string): RecipeRating {
@@ -506,6 +585,13 @@ export default function HomePage() {
     useState<IngredientFormState>(defaultIngredientForm);
   const [editingIngredientId, setEditingIngredientId] = useState<string | null>(null);
   const [recipeForm, setRecipeForm] = useState<RecipeFormState>(defaultRecipeForm);
+  const [externalRecipes, setExternalRecipes] = useState<ExternalRecipe[]>([]);
+  const [externalRecipeStatus, setExternalRecipeStatus] =
+    useState<ExternalRecipeStatus>("idle");
+  const [externalRecipeMessage, setExternalRecipeMessage] = useState("");
+  const [ingredientDictionaryForm, setIngredientDictionaryForm] =
+    useState<IngredientDictionaryFormState>(defaultIngredientDictionaryForm);
+  const [editingIngredientDictionaryId, setEditingIngredientDictionaryId] = useState<string | null>(null);
 
   useEffect(() => {
     repository.load().then((savedData) => {
@@ -539,8 +625,23 @@ export default function HomePage() {
     [data.ingredients],
   );
   const recipes = useMemo(
-    () => buildRecipeSuggestions(data.ingredients, data.userRecipes),
-    [data.ingredients, data.userRecipes],
+    () => buildRecipeSuggestions(data.ingredients, data.userRecipes, data.userIngredientDictionary),
+    [data.ingredients, data.userRecipes, data.userIngredientDictionary],
+  );
+  const ingredientDictionary = useMemo(
+    () => mergeIngredientDictionaries(data.userIngredientDictionary),
+    [data.userIngredientDictionary],
+  );
+  const externalRecipeIngredients = useMemo(
+    () => buildExternalRecipeSearchIngredients(activeIngredients, data.userIngredientDictionary),
+    [activeIngredients, data.userIngredientDictionary],
+  );
+  const unclassifiedIngredients = useMemo(
+    () =>
+      activeIngredients.filter(
+        (ingredient) => getCanonicalIngredient(ingredient.name, ingredientDictionary).isUnclassified,
+      ),
+    [activeIngredients, ingredientDictionary],
   );
   const expenseByCategory = useMemo(() => {
     return monthlyTransactions
@@ -552,10 +653,73 @@ export default function HomePage() {
       }, {});
   }, [monthlyTransactions]);
 
+  useEffect(() => {
+    if (!isLoaded) {
+      return;
+    }
+
+    if (externalRecipeIngredients.length === 0) {
+      setExternalRecipes([]);
+      setExternalRecipeStatus("idle");
+      setExternalRecipeMessage("");
+      return;
+    }
+
+    const controller = new AbortController();
+    setExternalRecipeStatus("loading");
+    setExternalRecipeMessage("");
+
+    fetch("/api/external-recipes", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        ingredients: externalRecipeIngredients,
+        userIngredientDictionary: data.userIngredientDictionary,
+      }),
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`External recipe API failed: ${response.status}`);
+        }
+
+        return response.json() as Promise<{
+          recipes?: ExternalRecipe[];
+          message?: string;
+        }>;
+      })
+      .then((result) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        setExternalRecipes(Array.isArray(result.recipes) ? result.recipes : []);
+        setExternalRecipeMessage(result.message ?? "");
+        setExternalRecipeStatus(result.recipes && result.recipes.length > 0 ? "ready" : "error");
+      })
+      .catch((error) => {
+        if (controller.signal.aborted) {
+          return;
+        }
+
+        console.error("Failed to load external recipes", error);
+        setExternalRecipes([]);
+        setExternalRecipeStatus("error");
+        setExternalRecipeMessage("外部レシピを取得できませんでした。手持ちレシピから提案します。");
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [data.userIngredientDictionary, externalRecipeIngredients, isLoaded]);
+
   const hasAnyData =
     data.transactions.length > 0 ||
     data.ingredients.length > 0 ||
-    data.userRecipes.length > 0;
+    data.userRecipes.length > 0 ||
+    data.userIngredientDictionary.length > 0;
   const editingTransaction = editingTransactionId
     ? data.transactions.find((transaction) => transaction.id === editingTransactionId)
     : null;
@@ -755,6 +919,79 @@ export default function HomePage() {
     }));
   }
 
+  function addIngredientDictionaryItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const now = new Date().toISOString();
+    const item = buildIngredientDictionaryItemFromForm(ingredientDictionaryForm, now);
+    if (!item) {
+      return;
+    }
+
+    if (editingIngredientDictionaryId) {
+      setData((current) => ({
+        ...current,
+        userIngredientDictionary: current.userIngredientDictionary.map((currentItem) =>
+          currentItem.id === editingIngredientDictionaryId
+            ? {
+                ...currentItem,
+                ...item,
+                id: currentItem.id,
+                groupId: currentItem.groupId || currentItem.id,
+                createdAt: currentItem.createdAt,
+                updatedAt: now,
+              }
+            : currentItem,
+        ),
+      }));
+      setEditingIngredientDictionaryId(null);
+      setIngredientDictionaryForm(defaultIngredientDictionaryForm());
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      userIngredientDictionary: [item, ...current.userIngredientDictionary],
+    }));
+    setIngredientDictionaryForm(defaultIngredientDictionaryForm());
+  }
+
+  function startEditIngredientDictionaryItem(item: IngredientDictionaryItem) {
+    setIngredientDictionaryForm(ingredientDictionaryFormFromItem(item));
+    setEditingIngredientDictionaryId(item.id);
+    setActiveTab("foods");
+  }
+
+  function cancelIngredientDictionaryEdit() {
+    setEditingIngredientDictionaryId(null);
+    setIngredientDictionaryForm(defaultIngredientDictionaryForm());
+  }
+
+  function deleteIngredientDictionaryItem(id: string) {
+    if (!window.confirm("この食材辞書を削除しますか？")) {
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      userIngredientDictionary: current.userIngredientDictionary.filter((item) => item.id !== id),
+    }));
+
+    if (editingIngredientDictionaryId === id) {
+      cancelIngredientDictionaryEdit();
+    }
+  }
+
+  function useIngredientAsDictionaryDraft(ingredient: Ingredient) {
+    setIngredientDictionaryForm((current) => ({
+      ...current,
+      displayName: ingredient.name,
+      aliases: current.aliases,
+    }));
+    setEditingIngredientDictionaryId(null);
+    setActiveTab("foods");
+  }
+
   function startEditIngredient(ingredient: Ingredient) {
     setIngredientForm({
       name: ingredient.name,
@@ -934,6 +1171,8 @@ export default function HomePage() {
     setEditingIngredientId(null);
     setIngredientForm(defaultIngredientForm());
     setRecipeForm(defaultRecipeForm());
+    setEditingIngredientDictionaryId(null);
+    setIngredientDictionaryForm(defaultIngredientDictionaryForm());
   }
 
   return (
@@ -985,14 +1224,24 @@ export default function HomePage() {
           {activeTab === "foods" && (
             <FoodsView
               form={ingredientForm}
+              dictionaryForm={ingredientDictionaryForm}
               activeIngredients={activeIngredients}
+              unclassifiedIngredients={unclassifiedIngredients}
+              userIngredientDictionary={data.userIngredientDictionary}
               onSubmit={addIngredient}
               onChange={setIngredientForm}
+              onDictionarySubmit={addIngredientDictionaryItem}
+              onDictionaryChange={setIngredientDictionaryForm}
               onUpdateStatus={updateIngredientStatus}
               onEditIngredient={startEditIngredient}
               onDeleteIngredient={deleteIngredient}
+              onEditDictionaryItem={startEditIngredientDictionaryItem}
+              onDeleteDictionaryItem={deleteIngredientDictionaryItem}
+              onCancelDictionaryEdit={cancelIngredientDictionaryEdit}
+              onUseIngredientAsDictionaryDraft={useIngredientAsDictionaryDraft}
               isEditing={Boolean(editingIngredient)}
               onCancelEdit={cancelIngredientEdit}
+              isDictionaryEditing={Boolean(editingIngredientDictionaryId)}
             />
           )}
 
@@ -1000,6 +1249,9 @@ export default function HomePage() {
             <RecipesView
               expiringIngredients={expiringIngredients}
               recipes={recipes}
+              externalRecipes={externalRecipes}
+              externalRecipeStatus={externalRecipeStatus}
+              externalRecipeMessage={externalRecipeMessage}
               recipeForm={recipeForm}
               userRecipes={data.userRecipes}
               onAddRecipe={addUserRecipe}
@@ -1785,24 +2037,48 @@ function ReceiptScanner({ onRegister }: { onRegister: (draft: ReceiptDraft) => v
 
 function FoodsView({
   form,
+  dictionaryForm,
   activeIngredients,
+  unclassifiedIngredients,
+  userIngredientDictionary,
   onSubmit,
   onChange,
+  onDictionarySubmit,
+  onDictionaryChange,
   onUpdateStatus,
   onEditIngredient,
   onDeleteIngredient,
+  onEditDictionaryItem,
+  onDeleteDictionaryItem,
+  onCancelDictionaryEdit,
+  onUseIngredientAsDictionaryDraft,
   isEditing,
   onCancelEdit,
+  isDictionaryEditing,
 }: {
   form: IngredientFormState;
+  dictionaryForm: IngredientDictionaryFormState;
   activeIngredients: Ingredient[];
+  unclassifiedIngredients: Ingredient[];
+  userIngredientDictionary: IngredientDictionaryItem[];
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onChange: (value: IngredientFormState | ((current: IngredientFormState) => IngredientFormState)) => void;
+  onDictionarySubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onDictionaryChange: (
+    value:
+      | IngredientDictionaryFormState
+      | ((current: IngredientDictionaryFormState) => IngredientDictionaryFormState),
+  ) => void;
   onUpdateStatus: (id: string, status: IngredientStatus) => void;
   onEditIngredient: (ingredient: Ingredient) => void;
   onDeleteIngredient: (id: string) => void;
+  onEditDictionaryItem: (item: IngredientDictionaryItem) => void;
+  onDeleteDictionaryItem: (id: string) => void;
+  onCancelDictionaryEdit: () => void;
+  onUseIngredientAsDictionaryDraft: (ingredient: Ingredient) => void;
   isEditing: boolean;
   onCancelEdit: () => void;
+  isDictionaryEditing: boolean;
 }) {
   return (
     <div className="space-y-5">
@@ -1843,6 +2119,18 @@ function FoodsView({
         onUpdateStatus={onUpdateStatus}
         onEditIngredient={onEditIngredient}
         onDeleteIngredient={onDeleteIngredient}
+      />
+      <IngredientDictionarySection
+        form={dictionaryForm}
+        unclassifiedIngredients={unclassifiedIngredients}
+        userIngredientDictionary={userIngredientDictionary}
+        onSubmit={onDictionarySubmit}
+        onChange={onDictionaryChange}
+        onEditDictionaryItem={onEditDictionaryItem}
+        onDeleteDictionaryItem={onDeleteDictionaryItem}
+        onCancelEdit={onCancelDictionaryEdit}
+        onUseIngredientAsDictionaryDraft={onUseIngredientAsDictionaryDraft}
+        isEditing={isDictionaryEditing}
       />
     </div>
   );
@@ -1993,9 +2281,228 @@ function FoodStockFields({
   );
 }
 
+function IngredientDictionarySection({
+  form,
+  unclassifiedIngredients,
+  userIngredientDictionary,
+  onSubmit,
+  onChange,
+  onEditDictionaryItem,
+  onDeleteDictionaryItem,
+  onCancelEdit,
+  onUseIngredientAsDictionaryDraft,
+  isEditing,
+}: {
+  form: IngredientDictionaryFormState;
+  unclassifiedIngredients: Ingredient[];
+  userIngredientDictionary: IngredientDictionaryItem[];
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onChange: (
+    value:
+      | IngredientDictionaryFormState
+      | ((current: IngredientDictionaryFormState) => IngredientDictionaryFormState),
+  ) => void;
+  onEditDictionaryItem: (item: IngredientDictionaryItem) => void;
+  onDeleteDictionaryItem: (id: string) => void;
+  onCancelEdit: () => void;
+  onUseIngredientAsDictionaryDraft: (ingredient: Ingredient) => void;
+  isEditing: boolean;
+}) {
+  return (
+    <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-lg font-bold">食材辞書に追加・編集</h3>
+          <p className="mt-1 text-sm leading-6 text-ink/65">
+            初期辞書 {initialIngredientDictionary.length}件に、よく使う表記ゆれや相性を追加できます。
+          </p>
+        </div>
+        {isEditing && (
+          <button
+            type="button"
+            onClick={onCancelEdit}
+            className="inline-flex min-h-11 items-center justify-center rounded-lg border border-ink/15 bg-white px-4 py-2 text-sm font-bold text-ink/70"
+          >
+            編集をやめる
+          </button>
+        )}
+      </div>
+
+      {unclassifiedIngredients.length > 0 && (
+        <div className="mt-4 rounded-lg border border-honey/30 bg-honey/10 p-3">
+          <p className="text-sm font-bold text-ink">未分類の食材</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {unclassifiedIngredients.slice(0, 8).map((ingredient) => (
+              <button
+                key={ingredient.id}
+                type="button"
+                onClick={() => onUseIngredientAsDictionaryDraft(ingredient)}
+                className="rounded-md bg-white px-2 py-1 text-xs font-bold text-ink/70 hover:text-leaf"
+              >
+                {ingredient.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <form onSubmit={onSubmit} className="mt-4 grid gap-4 sm:grid-cols-2">
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">表示名</span>
+          <input
+            required
+            value={form.displayName}
+            onChange={(event) => onChange((current) => ({ ...current, displayName: event.target.value }))}
+            placeholder="例: しょうが"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">カテゴリ</span>
+          <input
+            value={form.category}
+            onChange={(event) => onChange((current) => ({ ...current, category: event.target.value }))}
+            placeholder="例: 野菜"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+        <label className="sm:col-span-2">
+          <span className="mb-1 block text-sm font-bold text-ink/70">別名・表記ゆれ</span>
+          <textarea
+            value={form.aliases}
+            onChange={(event) => onChange((current) => ({ ...current, aliases: event.target.value }))}
+            rows={2}
+            placeholder="例: 生姜、ショウガ、ginger"
+            className="min-h-20 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">保存場所</span>
+          <select
+            value={form.storageType}
+            onChange={(event) =>
+              onChange((current) => ({ ...current, storageType: event.target.value as StorageLocation }))
+            }
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          >
+            {storageLocations.map((location) => (
+              <option key={location} value={location}>
+                {storageLocationLabels[location]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">期限目安</span>
+          <input
+            required
+            inputMode="numeric"
+            min="0"
+            value={form.defaultExpiryDays}
+            onChange={(event) =>
+              onChange((current) => ({ ...current, defaultExpiryDays: event.target.value }))
+            }
+            type="number"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">相性の良い食材</span>
+          <textarea
+            value={form.compatibleIngredients}
+            onChange={(event) =>
+              onChange((current) => ({ ...current, compatibleIngredients: event.target.value }))
+            }
+            rows={3}
+            placeholder="例: 豚肉、味噌、ねぎ"
+            className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+        <label>
+          <span className="mb-1 block text-sm font-bold text-ink/70">レシピカテゴリ</span>
+          <textarea
+            value={form.recipeCategories}
+            onChange={(event) =>
+              onChange((current) => ({ ...current, recipeCategories: event.target.value }))
+            }
+            rows={3}
+            placeholder="例: 和食、炒め物"
+            className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+        <label className="sm:col-span-2">
+          <span className="mb-1 block text-sm font-bold text-ink/70">タグ</span>
+          <input
+            value={form.tags}
+            onChange={(event) => onChange((current) => ({ ...current, tags: event.target.value }))}
+            placeholder="例: 節約、簡単、たんぱく質"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+          />
+        </label>
+        <div className="sm:col-span-2">
+          <button
+            type="submit"
+            className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-3 font-bold text-white shadow-sm sm:w-auto"
+          >
+            {isEditing ? <Pencil className="h-5 w-5" aria-hidden /> : <Plus className="h-5 w-5" aria-hidden />}
+            {isEditing ? "辞書を更新" : "辞書に追加"}
+          </button>
+        </div>
+      </form>
+
+      <div className="mt-5 border-t border-ink/10 pt-4">
+        <div className="flex items-center justify-between gap-3">
+          <h4 className="font-bold">ユーザー追加辞書</h4>
+          <span className="text-sm font-bold text-ink/60">{userIngredientDictionary.length}件</span>
+        </div>
+        <div className="mt-3 grid gap-2">
+          {userIngredientDictionary.length === 0 ? (
+            <EmptyState text="追加した食材辞書はまだありません。" />
+          ) : (
+            userIngredientDictionary.map((item) => (
+              <div
+                key={item.id}
+                className="flex flex-col gap-3 rounded-lg border border-ink/10 bg-paper p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0">
+                  <p className="font-bold">{item.displayName}</p>
+                  <p className="mt-1 truncate text-sm text-ink/60">
+                    {item.category} / {item.aliases.slice(0, 4).join("、") || "別名なし"}
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:flex">
+                  <button
+                    type="button"
+                    onClick={() => onEditDictionaryItem(item)}
+                    className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-ink/10 bg-white px-3 py-2 text-sm font-bold text-ink/70 hover:text-sea"
+                  >
+                    <Pencil className="h-4 w-4" aria-hidden />
+                    編集
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDeleteDictionaryItem(item.id)}
+                    className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-ink/10 bg-white px-3 py-2 text-sm font-bold text-ink/55 hover:text-tomato"
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden />
+                    削除
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function RecipesView({
   expiringIngredients,
   recipes,
+  externalRecipes,
+  externalRecipeStatus,
+  externalRecipeMessage,
   recipeForm,
   userRecipes,
   onAddRecipe,
@@ -2005,6 +2512,9 @@ function RecipesView({
 }: {
   expiringIngredients: Ingredient[];
   recipes: ReturnType<typeof buildRecipeSuggestions>;
+  externalRecipes: ExternalRecipe[];
+  externalRecipeStatus: ExternalRecipeStatus;
+  externalRecipeMessage: string;
   recipeForm: RecipeFormState;
   userRecipes: UserRecipe[];
   onAddRecipe: (event: FormEvent<HTMLFormElement>) => void;
@@ -2034,6 +2544,11 @@ function RecipesView({
         onChange={onRecipeFormChange}
         onDeleteRecipe={onDeleteUserRecipe}
       />
+      <ExternalRecipeSection
+        recipes={externalRecipes}
+        status={externalRecipeStatus}
+        message={externalRecipeMessage}
+      />
       <RecipeSection
         title="今日おすすめ"
         recipes={recipes.today}
@@ -2060,6 +2575,117 @@ function RecipesView({
         emptyText="追加したレシピが食材ストックに合うとここに表示されます。"
       />
     </div>
+  );
+}
+
+function ExternalRecipeSection({
+  recipes,
+  status,
+  message,
+}: {
+  recipes: ExternalRecipe[];
+  status: ExternalRecipeStatus;
+  message: string;
+}) {
+  return (
+    <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
+      <div className="flex items-center gap-2">
+        <Soup className="h-5 w-5 text-honey" aria-hidden />
+        <h3 className="text-lg font-bold">外部レシピ</h3>
+      </div>
+
+      <div className="mt-3 grid gap-3">
+        {status === "loading" && (
+          <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-ink/20 bg-paper px-3 py-4 text-sm font-bold text-ink/60">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />
+            外部レシピを取得中
+          </div>
+        )}
+
+        {status !== "loading" && message && <EmptyState text={message} />}
+
+        {status !== "loading" && !message && recipes.length === 0 && (
+          <EmptyState text="食材を登録すると、楽天レシピから近い候補を探します。" />
+        )}
+
+        {status !== "loading" &&
+          recipes.map((recipe) => <ExternalRecipeCard key={recipe.recipeId} recipe={recipe} />)}
+      </div>
+    </section>
+  );
+}
+
+function ExternalRecipeCard({ recipe }: { recipe: ExternalRecipe }) {
+  return (
+    <article className="overflow-hidden rounded-lg border border-ink/10 bg-paper">
+      <div className="grid gap-0 md:grid-cols-[160px_1fr]">
+        <div className="aspect-[4/3] bg-white md:aspect-auto">
+          {recipe.foodImageUrl ? (
+            <img
+              src={recipe.foodImageUrl}
+              alt=""
+              className="h-full min-h-40 w-full object-cover"
+              loading="lazy"
+            />
+          ) : (
+            <div className="flex h-full min-h-40 items-center justify-center text-sm font-bold text-ink/45">
+              画像なし
+            </div>
+          )}
+        </div>
+
+        <div className="p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h4 className="text-lg font-bold leading-snug">{recipe.recipeTitle}</h4>
+                <span className="rounded-md bg-white px-2 py-1 text-xs font-bold text-honey">
+                  {recipe.sourceCategoryName}
+                </span>
+              </div>
+              <p className="mt-1 text-sm leading-6 text-ink/65">{recipe.reason}</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-center sm:w-44">
+              <RecipeMetric label="時間" value={recipe.recipeIndication} />
+              <RecipeMetric label="費用" value={recipe.recipeCost} />
+            </div>
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <RecipeChipGroup
+              label="使えそうな手持ち食材"
+              values={recipe.usedIngredients}
+              emptyText="なし"
+              tone="leaf"
+            />
+            <RecipeChipGroup
+              label="足りない可能性がある食材"
+              values={recipe.possibleMissingIngredients}
+              emptyText="少なめ"
+              tone={recipe.possibleMissingIngredients.length === 0 ? "leaf" : "tomato"}
+            />
+          </div>
+
+          {recipe.recipeMaterial.length > 0 && (
+            <div className="mt-3">
+              <p className="text-xs font-bold text-ink/55">材料</p>
+              <p className="mt-1 line-clamp-2 text-sm leading-6 text-ink/70">
+                {recipe.recipeMaterial.join("、")}
+              </p>
+            </div>
+          )}
+
+          <a
+            href={recipe.recipeUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-ink px-4 py-2 text-sm font-bold text-white sm:w-auto"
+          >
+            元レシピを見る
+          </a>
+        </div>
+      </div>
+    </article>
   );
 }
 

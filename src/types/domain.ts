@@ -26,6 +26,22 @@ export type OpenedStatus = "unopened" | "opened";
 
 export type RecipeRating = 1 | 2 | 3 | 4 | 5;
 
+export type IngredientDictionaryItem = {
+  id: string;
+  displayName: string;
+  aliases: string[];
+  category: string;
+  storageType: StorageLocation;
+  defaultExpiryDays: number;
+  recipeCategories: string[];
+  tags: string[];
+  compatibleIngredients: string[];
+  groupId?: string;
+  isUserDefined?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type Transaction = {
   id: string;
   type: TransactionType;
@@ -74,6 +90,7 @@ export type HouseholdData = {
   transactions: Transaction[];
   ingredients: Ingredient[];
   userRecipes: UserRecipe[];
+  userIngredientDictionary: IngredientDictionaryItem[];
 };
 
 export const expenseCategories = [

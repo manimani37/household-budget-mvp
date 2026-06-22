@@ -2,6 +2,7 @@ import type {
   ExpiryType,
   HouseholdData,
   Ingredient,
+  IngredientDictionaryItem,
   IngredientUnit,
   OpenedStatus,
   RecipeRating,
@@ -17,6 +18,7 @@ export const emptyHouseholdData: HouseholdData = {
   transactions: [],
   ingredients: [],
   userRecipes: [],
+  userIngredientDictionary: [],
 };
 
 export interface HouseholdRepository {
@@ -43,12 +45,16 @@ export class LocalStorageHouseholdRepository implements HouseholdRepository {
       const userRecipes = Array.isArray(parsed.userRecipes)
         ? parsed.userRecipes.map((recipe) => normalizeUserRecipe(recipe))
         : [];
+      const userIngredientDictionary = Array.isArray(parsed.userIngredientDictionary)
+        ? parsed.userIngredientDictionary.map((item) => normalizeIngredientDictionaryItem(item))
+        : [];
 
       return {
         schemaVersion: 1,
         transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
         ingredients,
         userRecipes,
+        userIngredientDictionary,
       };
     } catch {
       return emptyHouseholdData;
@@ -116,6 +122,32 @@ function normalizeUserRecipe(value: unknown): UserRecipe {
   };
 }
 
+function normalizeIngredientDictionaryItem(value: unknown): IngredientDictionaryItem {
+  const source = (value ?? {}) as Partial<IngredientDictionaryItem> & {
+    defaultExpiryDays?: unknown;
+    storageType?: unknown;
+  };
+  const now = new Date().toISOString();
+  const displayName = typeof source.displayName === "string" ? source.displayName.trim() : "";
+  const id = typeof source.id === "string" && source.id ? source.id : createId("ingredient_dict");
+
+  return {
+    id,
+    displayName,
+    aliases: normalizeStringArray(source.aliases),
+    category: typeof source.category === "string" && source.category.trim() ? source.category.trim() : "未分類",
+    storageType: normalizeStorageLocation(source.storageType),
+    defaultExpiryDays: normalizeExpiryDays(source.defaultExpiryDays),
+    recipeCategories: normalizeStringArray(source.recipeCategories),
+    tags: normalizeStringArray(source.tags),
+    compatibleIngredients: normalizeStringArray(source.compatibleIngredients),
+    groupId: typeof source.groupId === "string" && source.groupId.trim() ? source.groupId.trim() : id,
+    isUserDefined: true,
+    createdAt: typeof source.createdAt === "string" ? source.createdAt : now,
+    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : now,
+  };
+}
+
 function normalizePrice(value: unknown): number {
   const price = typeof value === "number" ? value : Number(value);
   return Number.isFinite(price) && price > 0 ? price : 0;
@@ -135,6 +167,11 @@ function normalizeStringArray(value: unknown): string[] {
 function normalizeCookingTime(value: unknown): number {
   const minutes = typeof value === "number" ? value : Number(value);
   return Number.isFinite(minutes) && minutes > 0 ? Math.round(minutes) : 10;
+}
+
+function normalizeExpiryDays(value: unknown): number {
+  const days = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(days) && days >= 0 ? Math.round(days) : 7;
 }
 
 function normalizeRecipeRating(value: unknown): RecipeRating {

@@ -1,5 +1,9 @@
 export type TransactionType = "expense" | "income";
 
+export type RecurringExpenseFrequency = "monthly" | "weekly" | "yearly";
+
+export type RecurringExpenseStatus = "active" | "paused";
+
 export type PaymentMethod =
   | "cash"
   | "paypay"
@@ -59,6 +63,22 @@ export type Transaction = {
   paymentMethod: PaymentMethod;
   date: string;
   memo: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RecurringExpense = {
+  id: string;
+  name: string;
+  amount: number;
+  category: string;
+  frequency: RecurringExpenseFrequency;
+  paymentDay: number;
+  paymentMonth: number;
+  paymentMethod: PaymentMethod;
+  memo: string;
+  status: RecurringExpenseStatus;
+  reflectedMonthKeys: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -132,6 +152,7 @@ export type HouseholdData = {
   userRecipes: UserRecipe[];
   userIngredientDictionary: IngredientDictionaryItem[];
   cookedDishes: CookedDish[];
+  recurringExpenses: RecurringExpense[];
 };
 
 export const expenseCategories = [
@@ -154,6 +175,17 @@ export const paymentMethodLabels: Record<PaymentMethod, string> = {
   transit_ic: "交通系IC",
   bank_transfer: "振込",
   other: "その他",
+};
+
+export const recurringExpenseFrequencyLabels: Record<RecurringExpenseFrequency, string> = {
+  monthly: "毎月",
+  weekly: "毎週",
+  yearly: "毎年",
+};
+
+export const recurringExpenseStatusLabels: Record<RecurringExpenseStatus, string> = {
+  active: "有効",
+  paused: "停止中",
 };
 
 export const ingredientUnitOptions: IngredientUnit[] = [

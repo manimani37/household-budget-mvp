@@ -8,6 +8,9 @@ import type {
   IngredientDictionaryItem,
   IngredientUnit,
   OpenedStatus,
+  RecurringExpense,
+  RecurringExpenseFrequency,
+  RecurringExpenseStatus,
   RecipeRating,
   StorageLocation,
   UserRecipe,
@@ -23,6 +26,7 @@ export const emptyHouseholdData: HouseholdData = {
   userRecipes: [],
   userIngredientDictionary: [],
   cookedDishes: [],
+  recurringExpenses: [],
 };
 
 export interface HouseholdRepository {
@@ -55,6 +59,9 @@ export class LocalStorageHouseholdRepository implements HouseholdRepository {
       const cookedDishes = Array.isArray(parsed.cookedDishes)
         ? parsed.cookedDishes.map((dish) => normalizeCookedDish(dish))
         : [];
+      const recurringExpenses = Array.isArray(parsed.recurringExpenses)
+        ? parsed.recurringExpenses.map((expense) => normalizeRecurringExpense(expense))
+        : [];
 
       return {
         schemaVersion: 1,
@@ -63,6 +70,7 @@ export class LocalStorageHouseholdRepository implements HouseholdRepository {
         userRecipes,
         userIngredientDictionary,
         cookedDishes,
+        recurringExpenses,
       };
     } catch {
       return emptyHouseholdData;
@@ -215,6 +223,34 @@ function normalizeCookedDishIngredient(value: unknown): CookedDishIngredient {
   };
 }
 
+function normalizeRecurringExpense(value: unknown): RecurringExpense {
+  const source = (value ?? {}) as Partial<RecurringExpense> & {
+    amount?: unknown;
+    frequency?: unknown;
+    paymentDay?: unknown;
+    paymentMonth?: unknown;
+    paymentMethod?: unknown;
+    status?: unknown;
+  };
+  const now = new Date().toISOString();
+
+  return {
+    id: typeof source.id === "string" ? source.id : createId("recurring"),
+    name: typeof source.name === "string" ? source.name : "",
+    amount: normalizePrice(source.amount),
+    category: typeof source.category === "string" ? source.category : "その他",
+    frequency: normalizeRecurringFrequency(source.frequency),
+    paymentDay: normalizeRecurringPaymentDay(source.paymentDay, source.frequency),
+    paymentMonth: normalizeRecurringPaymentMonth(source.paymentMonth),
+    paymentMethod: normalizePaymentMethod(source.paymentMethod),
+    memo: typeof source.memo === "string" ? source.memo : "",
+    status: normalizeRecurringStatus(source.status),
+    reflectedMonthKeys: normalizeStringArray(source.reflectedMonthKeys),
+    createdAt: typeof source.createdAt === "string" ? source.createdAt : now,
+    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : now,
+  };
+}
+
 function normalizePrice(value: unknown): number {
   const price = typeof value === "number" ? value : Number(value);
   return Number.isFinite(price) && price > 0 ? price : 0;
@@ -274,6 +310,43 @@ function normalizeCookingCostStatus(value: unknown): CookingCostStatus {
   }
 
   return "excluded";
+}
+
+function normalizeRecurringFrequency(value: unknown): RecurringExpenseFrequency {
+  return value === "weekly" || value === "yearly" ? value : "monthly";
+}
+
+function normalizeRecurringStatus(value: unknown): RecurringExpenseStatus {
+  return value === "paused" ? "paused" : "active";
+}
+
+function normalizeRecurringPaymentDay(value: unknown, frequency: unknown): number {
+  const day = typeof value === "number" ? value : Number(value);
+  if (frequency === "weekly") {
+    return Number.isFinite(day) && day >= 0 && day <= 6 ? Math.round(day) : 1;
+  }
+
+  return Number.isFinite(day) && day >= 1 && day <= 31 ? Math.round(day) : 1;
+}
+
+function normalizeRecurringPaymentMonth(value: unknown): number {
+  const month = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(month) && month >= 1 && month <= 12 ? Math.round(month) : 1;
+}
+
+function normalizePaymentMethod(value: unknown): RecurringExpense["paymentMethod"] {
+  if (
+    value === "cash" ||
+    value === "paypay" ||
+    value === "credit_card" ||
+    value === "transit_ic" ||
+    value === "bank_transfer" ||
+    value === "other"
+  ) {
+    return value;
+  }
+
+  return "credit_card";
 }
 
 function normalizeUnit(value: unknown): IngredientUnit {

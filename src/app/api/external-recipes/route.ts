@@ -29,6 +29,20 @@ type RakutenEnvironment = {
   missingNames: string[];
 };
 
+type RakutenApiContext = "category-list" | "category-ranking";
+
+class RakutenApiError extends Error {
+  context: RakutenApiContext;
+  status?: number;
+
+  constructor(context: RakutenApiContext, message: string, status?: number) {
+    super(message);
+    this.name = "RakutenApiError";
+    this.context = context;
+    this.status = status;
+  }
+}
+
 export async function GET() {
   const environment = readRakutenEnvironment();
 
@@ -66,17 +80,23 @@ export async function POST(request: Request) {
       return NextResponse.json({ recipes: [], message: "" });
     }
 
-    const categories = await fetchRakutenCategories(environment.applicationId, environment.accessKey);
+    const categories = await fetchRakutenCategories(environment.applicationId);
     const selectedCategories = pickRakutenRecipeCategories(categories, ingredients, 4);
     const targetCategories =
       selectedCategories.length > 0 ? selectedCategories : categories.slice(0, 1);
-    const rankingRecipes = (
-      await Promise.all(
-        targetCategories.map((category) =>
-          fetchRakutenRecipeRanking(environment.applicationId, environment.accessKey, category),
-        ),
-      )
-    ).flat();
+    const rankingResults = await Promise.allSettled(
+      targetCategories.map((category) =>
+        fetchRakutenRecipeRanking(environment.applicationId, category),
+      ),
+    );
+    const rankingRecipes = rankingResults.flatMap((result) => {
+      if (result.status === "fulfilled") {
+        return result.value;
+      }
+
+      logExternalRecipeError(result.reason);
+      return [];
+    });
     const recipes = scoreExternalRecipes(
       dedupeRecipes(rankingRecipes),
       ingredients,
@@ -88,7 +108,7 @@ export async function POST(request: Request) {
       message: recipes.length === 0 ? FALLBACK_MESSAGE : "",
     });
   } catch (error) {
-    console.error("Failed to fetch external recipes", error);
+    logExternalRecipeError(error);
     return NextResponse.json({ recipes: [], message: FALLBACK_MESSAGE });
   }
 }
@@ -122,7 +142,6 @@ function buildMissingEnvironmentMessage(missingNames: string[]): string {
 
 async function fetchRakutenCategories(
   applicationId: string,
-  accessKey: string,
 ): Promise<RakutenRecipeCategory[]> {
   const url = new URL(CATEGORY_LIST_URL);
   url.searchParams.set("applicationId", applicationId);
@@ -132,27 +151,30 @@ async function fetchRakutenCategories(
 
   const response = await fetch(url, {
     cache: "no-store",
-    headers: {
-      accessKey,
-    },
   });
 
   if (!response.ok) {
-    throw new Error(`Rakuten category list failed: ${response.status}`);
+    throw new RakutenApiError(
+      "category-list",
+      "Rakuten recipe category list request failed",
+      response.status,
+    );
   }
 
   const data = (await response.json()) as {
-    result?: {
-      large?: RakutenRecipeCategory[];
-    };
+    result?: unknown;
   };
 
-  return Array.isArray(data.result?.large) ? data.result.large : [];
+  const categories = normalizeRakutenCategories(data.result);
+  if (categories.length === 0) {
+    throw new RakutenApiError("category-list", "Rakuten recipe category list returned no categories");
+  }
+
+  return categories;
 }
 
 async function fetchRakutenRecipeRanking(
   applicationId: string,
-  accessKey: string,
   category: RakutenRecipeCategory,
 ): Promise<RakutenRecipeRankingItem[]> {
   const url = new URL(CATEGORY_RANKING_URL);
@@ -179,24 +201,67 @@ async function fetchRakutenRecipeRanking(
 
   const response = await fetch(url, {
     cache: "no-store",
-    headers: {
-      accessKey,
-    },
   });
 
   if (!response.ok) {
-    throw new Error(`Rakuten recipe ranking failed: ${response.status}`);
+    throw new RakutenApiError(
+      "category-ranking",
+      `Rakuten recipe ranking request failed for category ${category.categoryId}`,
+      response.status,
+    );
   }
 
   const data = (await response.json()) as {
-    result?: RakutenRecipeRankingItem[];
+    result?: unknown;
   };
-  const recipes = Array.isArray(data.result) ? data.result : [];
+  const recipes = normalizeRakutenRankingItems(data.result);
 
   return recipes.map((recipe) => ({
     ...recipe,
     categoryName: category.categoryName,
   }));
+}
+
+function normalizeRakutenCategories(value: unknown): RakutenRecipeCategory[] {
+  const candidates =
+    Array.isArray(value)
+      ? value
+      : isObject(value) && Array.isArray(value.large)
+        ? value.large
+        : [];
+
+  return candidates
+    .filter((item): item is Record<string, unknown> => isObject(item))
+    .map((item) => ({
+      categoryId: String(item.categoryId ?? "").trim(),
+      categoryName: String(item.categoryName ?? "").trim(),
+      categoryUrl: typeof item.categoryUrl === "string" ? item.categoryUrl : undefined,
+    }))
+    .filter((category) => category.categoryId && category.categoryName);
+}
+
+function normalizeRakutenRankingItems(value: unknown): RakutenRecipeRankingItem[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is Record<string, unknown> => isObject(item))
+    .map((item) => ({
+      recipeId: String(item.recipeId ?? "").trim(),
+      recipeTitle: String(item.recipeTitle ?? "").trim(),
+      recipeUrl: String(item.recipeUrl ?? "").trim(),
+      foodImageUrl: typeof item.foodImageUrl === "string" ? item.foodImageUrl : undefined,
+      mediumImageUrl: typeof item.mediumImageUrl === "string" ? item.mediumImageUrl : undefined,
+      smallImageUrl: typeof item.smallImageUrl === "string" ? item.smallImageUrl : undefined,
+      recipeDescription:
+        typeof item.recipeDescription === "string" ? item.recipeDescription : undefined,
+      recipeMaterial: normalizeStringArray(item.recipeMaterial),
+      recipeIndication: typeof item.recipeIndication === "string" ? item.recipeIndication : undefined,
+      recipeCost: typeof item.recipeCost === "string" ? item.recipeCost : undefined,
+      rank: typeof item.rank === "number" || typeof item.rank === "string" ? item.rank : undefined,
+    }))
+    .filter((recipe) => recipe.recipeId && recipe.recipeTitle && recipe.recipeUrl);
 }
 
 function normalizeSearchIngredients(value: unknown): ExternalRecipeSearchIngredient[] {
@@ -268,6 +333,25 @@ function normalizeStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
     : [];
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function logExternalRecipeError(error: unknown) {
+  if (error instanceof RakutenApiError) {
+    console.error("Failed to fetch external recipes", {
+      context: error.context,
+      status: error.status ?? null,
+      message: error.message,
+    });
+    return;
+  }
+
+  console.error("Failed to fetch external recipes", {
+    message: error instanceof Error ? error.message : "Unknown error",
+  });
 }
 
 function normalizeStorageType(value: unknown): StorageLocation {

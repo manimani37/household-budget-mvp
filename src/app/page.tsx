@@ -33,6 +33,10 @@ import {
   getMonthlyCookedDishes,
   getMonthlySummary,
   getMonthlyTransactions,
+  getNextRecurringPaymentDate,
+  getRecurringMonthlySummary,
+  getRecurringOccurrencesForMonth,
+  getUpcomingRecurringExpenses,
 } from "@/lib/calculations";
 import {
   applyCookedDishToStock,
@@ -40,7 +44,7 @@ import {
   costStatusLabel,
 } from "@/lib/cooking";
 import type { CookingIngredientInput } from "@/lib/cooking";
-import { currentMonthKey, formatShortDate, formatYen, todayIso, toIsoDate } from "@/lib/date";
+import { currentMonthKey, daysUntil, formatShortDate, formatYen, todayIso, toIsoDate } from "@/lib/date";
 import { buildExternalRecipeSearchIngredients } from "@/lib/externalRecipes";
 import type { ExternalRecipe } from "@/lib/externalRecipes";
 import {
@@ -65,6 +69,9 @@ import type {
   ExpiryType,
   OpenedStatus,
   PaymentMethod,
+  RecurringExpense,
+  RecurringExpenseFrequency,
+  RecurringExpenseStatus,
   RecipeRating,
   StorageLocation,
   Transaction,
@@ -78,10 +85,12 @@ import {
   incomeCategories,
   openedStatusLabels,
   paymentMethodLabels,
+  recurringExpenseFrequencyLabels,
+  recurringExpenseStatusLabels,
   storageLocationLabels,
 } from "@/types/domain";
 
-type Tab = "home" | "record" | "foods" | "recipes" | "settings";
+type Tab = "home" | "record" | "recurring" | "foods" | "recipes" | "settings";
 
 type RecordMode = "manual" | "receipt";
 
@@ -133,6 +142,18 @@ type IngredientDictionaryFormState = {
   tags: string;
 };
 
+type RecurringExpenseFormState = {
+  name: string;
+  amount: string;
+  category: string;
+  frequency: RecurringExpenseFrequency;
+  paymentDay: string;
+  paymentMonth: string;
+  paymentMethod: PaymentMethod;
+  memo: string;
+  status: RecurringExpenseStatus;
+};
+
 type CookingFormItemState = {
   id: string;
   ingredientId: string;
@@ -177,6 +198,10 @@ type ReceiptDraft = {
 };
 
 const paymentMethods = Object.keys(paymentMethodLabels) as PaymentMethod[];
+const recurringExpenseCategories = ["通信費", "サブスク", "交通費", "保険", "家賃", "光熱費", "教育", "その他"];
+const recurringExpenseFrequencies: RecurringExpenseFrequency[] = ["monthly", "weekly", "yearly"];
+const recurringExpenseStatuses: RecurringExpenseStatus[] = ["active", "paused"];
+const weekdayLabels = ["日曜", "月曜", "火曜", "水曜", "木曜", "金曜", "土曜"];
 const storageLocations = Object.keys(storageLocationLabels) as StorageLocation[];
 const expiryTypes = Object.keys(expiryTypeLabels) as ExpiryType[];
 const openedStatuses = Object.keys(openedStatusLabels) as OpenedStatus[];
@@ -236,6 +261,57 @@ function defaultIngredientDictionaryForm(): IngredientDictionaryFormState {
     recipeCategories: "",
     tags: "",
   };
+}
+
+function defaultRecurringExpenseForm(): RecurringExpenseFormState {
+  return {
+    name: "",
+    amount: "",
+    category: recurringExpenseCategories[0],
+    frequency: "monthly",
+    paymentDay: "25",
+    paymentMonth: "1",
+    paymentMethod: "credit_card",
+    memo: "",
+    status: "active",
+  };
+}
+
+function recurringExpenseFormFromItem(expense: RecurringExpense): RecurringExpenseFormState {
+  return {
+    name: expense.name,
+    amount: expense.amount > 0 ? String(expense.amount) : "",
+    category: expense.category,
+    frequency: expense.frequency,
+    paymentDay: String(expense.paymentDay),
+    paymentMonth: String(expense.paymentMonth),
+    paymentMethod: expense.paymentMethod,
+    memo: expense.memo,
+    status: expense.status,
+  };
+}
+
+function formatRecurringPaymentSchedule(expense: RecurringExpense): string {
+  if (expense.frequency === "weekly") {
+    return `毎週${weekdayLabels[expense.paymentDay] ?? "曜日未設定"}`;
+  }
+
+  if (expense.frequency === "yearly") {
+    return `毎年${expense.paymentMonth}月${expense.paymentDay}日`;
+  }
+
+  return `毎月${expense.paymentDay}日`;
+}
+
+function formatDaysUntilRecurring(days: number): string {
+  if (days < 0) {
+    return `${Math.abs(days)}日過ぎています`;
+  }
+  if (days === 0) {
+    return "今日";
+  }
+
+  return `あと${days}日`;
 }
 
 function defaultCookingForm(): CookingFormState {
@@ -645,6 +721,9 @@ export default function HomePage() {
     defaultTransactionForm,
   );
   const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
+  const [recurringExpenseForm, setRecurringExpenseForm] =
+    useState<RecurringExpenseFormState>(defaultRecurringExpenseForm);
+  const [editingRecurringExpenseId, setEditingRecurringExpenseId] = useState<string | null>(null);
   const [ingredientForm, setIngredientForm] =
     useState<IngredientFormState>(defaultIngredientForm);
   const [editingIngredientId, setEditingIngredientId] = useState<string | null>(null);
@@ -681,6 +760,14 @@ export default function HomePage() {
   const monthlyTransactions = useMemo(
     () => getMonthlyTransactions(data.transactions, selectedMonth),
     [data.transactions, selectedMonth],
+  );
+  const recurringSummary = useMemo(
+    () => getRecurringMonthlySummary(data.recurringExpenses, selectedMonth),
+    [data.recurringExpenses, selectedMonth],
+  );
+  const upcomingRecurringExpenses = useMemo(
+    () => getUpcomingRecurringExpenses(data.recurringExpenses, 8),
+    [data.recurringExpenses],
   );
   const monthlyCookedDishes = useMemo(
     () => getMonthlyCookedDishes(data.cookedDishes, selectedMonth),
@@ -803,9 +890,13 @@ export default function HomePage() {
     data.ingredients.length > 0 ||
     data.userRecipes.length > 0 ||
     data.userIngredientDictionary.length > 0 ||
-    data.cookedDishes.length > 0;
+    data.cookedDishes.length > 0 ||
+    data.recurringExpenses.length > 0;
   const editingTransaction = editingTransactionId
     ? data.transactions.find((transaction) => transaction.id === editingTransactionId)
+    : null;
+  const editingRecurringExpense = editingRecurringExpenseId
+    ? data.recurringExpenses.find((expense) => expense.id === editingRecurringExpenseId)
     : null;
   const editingIngredient = editingIngredientId
     ? data.ingredients.find((ingredient) => ingredient.id === editingIngredientId)
@@ -873,6 +964,159 @@ export default function HomePage() {
     }));
     setTransactionForm(defaultTransactionForm());
     setActiveTab("home");
+  }
+
+  function addRecurringExpense(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const amount = Number(recurringExpenseForm.amount);
+    if (!recurringExpenseForm.name.trim() || !Number.isFinite(amount) || amount <= 0) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const frequency = recurringExpenseForm.frequency;
+    const paymentDayValue = Math.round(Number(recurringExpenseForm.paymentDay));
+    const paymentMonthValue = Math.round(Number(recurringExpenseForm.paymentMonth));
+    const paymentDay =
+      frequency === "weekly"
+        ? Math.min(6, Math.max(0, Number.isFinite(paymentDayValue) ? paymentDayValue : 1))
+        : Math.min(31, Math.max(1, Number.isFinite(paymentDayValue) ? paymentDayValue : 1));
+    const paymentMonth = Math.min(12, Math.max(1, Number.isFinite(paymentMonthValue) ? paymentMonthValue : 1));
+    const expenseValues = {
+      name: recurringExpenseForm.name.trim(),
+      amount,
+      category: recurringExpenseForm.category.trim() || "その他",
+      frequency,
+      paymentDay,
+      paymentMonth,
+      paymentMethod: recurringExpenseForm.paymentMethod,
+      memo: recurringExpenseForm.memo.trim(),
+      status: recurringExpenseForm.status,
+      updatedAt: now,
+    };
+
+    if (editingRecurringExpenseId) {
+      setData((current) => ({
+        ...current,
+        recurringExpenses: current.recurringExpenses.map((expense) =>
+          expense.id === editingRecurringExpenseId
+            ? {
+                ...expense,
+                ...expenseValues,
+              }
+            : expense,
+        ),
+      }));
+      setEditingRecurringExpenseId(null);
+      setRecurringExpenseForm(defaultRecurringExpenseForm());
+      return;
+    }
+
+    const expense: RecurringExpense = {
+      id: createId("recurring"),
+      ...expenseValues,
+      reflectedMonthKeys: [],
+      createdAt: now,
+    };
+
+    setData((current) => ({
+      ...current,
+      recurringExpenses: [expense, ...current.recurringExpenses],
+    }));
+    setRecurringExpenseForm(defaultRecurringExpenseForm());
+  }
+
+  function startEditRecurringExpense(expense: RecurringExpense) {
+    setRecurringExpenseForm(recurringExpenseFormFromItem(expense));
+    setEditingRecurringExpenseId(expense.id);
+    setActiveTab("recurring");
+  }
+
+  function cancelRecurringExpenseEdit() {
+    setEditingRecurringExpenseId(null);
+    setRecurringExpenseForm(defaultRecurringExpenseForm());
+  }
+
+  function deleteRecurringExpense(id: string) {
+    if (!window.confirm("この定期支出を削除しますか？")) {
+      return;
+    }
+
+    setData((current) => ({
+      ...current,
+      recurringExpenses: current.recurringExpenses.filter((expense) => expense.id !== id),
+    }));
+
+    if (editingRecurringExpenseId === id) {
+      cancelRecurringExpenseEdit();
+    }
+  }
+
+  function toggleRecurringExpenseStatus(id: string) {
+    const now = new Date().toISOString();
+    setData((current) => ({
+      ...current,
+      recurringExpenses: current.recurringExpenses.map((expense) =>
+        expense.id === id
+          ? {
+              ...expense,
+              status: expense.status === "active" ? "paused" : "active",
+              updatedAt: now,
+            }
+          : expense,
+      ),
+    }));
+  }
+
+  function reflectRecurringExpensesToTransactions() {
+    const targetExpenses = data.recurringExpenses.filter(
+      (expense) =>
+        expense.status === "active" &&
+        !expense.reflectedMonthKeys.includes(selectedMonth) &&
+        getRecurringOccurrencesForMonth(expense, selectedMonth).length > 0,
+    );
+    if (targetExpenses.length === 0) {
+      window.alert("反映できる未反映の定期支出はありません。");
+      return;
+    }
+
+    const transactionCount = targetExpenses.reduce(
+      (count, expense) => count + getRecurringOccurrencesForMonth(expense, selectedMonth).length,
+      0,
+    );
+    if (!window.confirm(`${selectedMonth} の定期支出 ${transactionCount}件を通常の支出記録に追加しますか？`)) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const transactions: Transaction[] = targetExpenses.flatMap((expense) =>
+      getRecurringOccurrencesForMonth(expense, selectedMonth).map((date) => ({
+        id: createId("txn"),
+        type: "expense",
+        amount: expense.amount,
+        category: expense.category,
+        paymentMethod: expense.paymentMethod,
+        date,
+        memo: expense.memo ? `定期支出: ${expense.name} / ${expense.memo}` : `定期支出: ${expense.name}`,
+        createdAt: now,
+        updatedAt: now,
+      })),
+    );
+
+    setData((current) => ({
+      ...current,
+      transactions: [...transactions, ...current.transactions],
+      recurringExpenses: current.recurringExpenses.map((expense) =>
+        targetExpenses.some((target) => target.id === expense.id)
+          ? {
+              ...expense,
+              reflectedMonthKeys: [...expense.reflectedMonthKeys, selectedMonth],
+              updatedAt: now,
+            }
+          : expense,
+      ),
+    }));
   }
 
   function addIngredient(event: FormEvent<HTMLFormElement>) {
@@ -1374,6 +1618,8 @@ export default function HomePage() {
     setData(emptyHouseholdData);
     setEditingTransactionId(null);
     setTransactionForm(defaultTransactionForm());
+    setEditingRecurringExpenseId(null);
+    setRecurringExpenseForm(defaultRecurringExpenseForm());
     setEditingIngredientId(null);
     setIngredientForm(defaultIngredientForm());
     setRecipeForm(defaultRecipeForm());
@@ -1426,6 +1672,25 @@ export default function HomePage() {
               onRegisterReceipt={addReceiptDraft}
               isEditing={Boolean(editingTransaction)}
               onCancelEdit={cancelTransactionEdit}
+            />
+          )}
+
+          {activeTab === "recurring" && (
+            <RecurringExpensesView
+              selectedMonth={selectedMonth}
+              setSelectedMonth={setSelectedMonth}
+              form={recurringExpenseForm}
+              expenses={data.recurringExpenses}
+              summary={recurringSummary}
+              upcomingExpenses={upcomingRecurringExpenses}
+              isEditing={Boolean(editingRecurringExpense)}
+              onSubmit={addRecurringExpense}
+              onChange={setRecurringExpenseForm}
+              onEditExpense={startEditRecurringExpense}
+              onDeleteExpense={deleteRecurringExpense}
+              onToggleStatus={toggleRecurringExpenseStatus}
+              onCancelEdit={cancelRecurringExpenseEdit}
+              onReflectToTransactions={reflectRecurringExpensesToTransactions}
             />
           )}
 
@@ -1575,8 +1840,9 @@ function DashboardView({
         />
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <ActionButton label="支出・収入を追加" icon={ReceiptText} onClick={() => onChangeTab("record")} />
+        <ActionButton label="定期支出を見る" icon={CalendarClock} onClick={() => onChangeTab("recurring")} />
         <ActionButton label="食材を追加" icon={Sprout} onClick={() => onChangeTab("foods")} />
         <ActionButton label="レシピを見る" icon={Soup} onClick={() => onChangeTab("recipes")} />
       </div>
@@ -2252,6 +2518,378 @@ function ReceiptScanner({ onRegister }: { onRegister: (draft: ReceiptDraft) => v
           <ReceiptText className="h-5 w-5" aria-hidden />
           支出として登録
         </button>
+      </section>
+    </div>
+  );
+}
+
+function RecurringExpensesView({
+  selectedMonth,
+  setSelectedMonth,
+  form,
+  expenses,
+  summary,
+  upcomingExpenses,
+  isEditing,
+  onSubmit,
+  onChange,
+  onEditExpense,
+  onDeleteExpense,
+  onToggleStatus,
+  onCancelEdit,
+  onReflectToTransactions,
+}: {
+  selectedMonth: string;
+  setSelectedMonth: (month: string) => void;
+  form: RecurringExpenseFormState;
+  expenses: RecurringExpense[];
+  summary: ReturnType<typeof getRecurringMonthlySummary>;
+  upcomingExpenses: ReturnType<typeof getUpcomingRecurringExpenses>;
+  isEditing: boolean;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onChange: (value: RecurringExpenseFormState | ((current: RecurringExpenseFormState) => RecurringExpenseFormState)) => void;
+  onEditExpense: (expense: RecurringExpense) => void;
+  onDeleteExpense: (id: string) => void;
+  onToggleStatus: (id: string) => void;
+  onCancelEdit: () => void;
+  onReflectToTransactions: () => void;
+}) {
+  const categoryRows = Object.entries(summary.categoryTotals).sort((a, b) => b[1] - a[1]);
+  const reflectedCount = expenses.filter((expense) => expense.reflectedMonthKeys.includes(selectedMonth)).length;
+
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <PageHeading eyebrow="Fixed costs" title="定期支出" />
+        <label className="w-full sm:w-44">
+          <span className="mb-1 block text-sm font-bold text-ink/70">対象月</span>
+          <input
+            value={selectedMonth}
+            onChange={(event) => setSelectedMonth(event.target.value)}
+            type="month"
+            className="min-h-12 w-full rounded-lg border border-ink/15 bg-white px-3 py-3 shadow-sm"
+          />
+        </label>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <MetricCard label="今月の定期支出" value={formatYen(summary.total)} icon={CalendarClock} tone="tomato" />
+        <MetricCard label="有効な固定費" value={`${summary.activeCount}件`} icon={CheckCircle2} tone="leaf" />
+        <MetricCard label="今月の発生回数" value={`${summary.occurrenceCount}回`} icon={ClipboardList} tone="sea" />
+      </div>
+
+      <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-lg font-bold">{isEditing ? "定期支出を編集" : "定期支出を登録"}</h3>
+            <p className="mt-1 text-sm leading-6 text-ink/65">
+              毎月のスマホ代、サブスク、保険、家賃などを手入力で管理します。
+            </p>
+          </div>
+          {isEditing && (
+            <button
+              type="button"
+              onClick={onCancelEdit}
+              className="inline-flex min-h-11 items-center justify-center rounded-lg border border-ink/15 bg-white px-4 py-2 text-sm font-bold text-ink/70"
+            >
+              キャンセル
+            </button>
+          )}
+        </div>
+
+        <form onSubmit={onSubmit} className="mt-4 grid gap-4 sm:grid-cols-2">
+          <label className="sm:col-span-2">
+            <span className="mb-1 block text-sm font-bold text-ink/70">支出名</span>
+            <input
+              required
+              value={form.name}
+              onChange={(event) => onChange((current) => ({ ...current, name: event.target.value }))}
+              placeholder="例: スマホ代、Netflix、保険料"
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">金額</span>
+            <input
+              required
+              inputMode="numeric"
+              min="1"
+              value={form.amount}
+              onChange={(event) => onChange((current) => ({ ...current, amount: event.target.value }))}
+              type="number"
+              placeholder="例: 2980"
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">カテゴリ</span>
+            <select
+              value={form.category}
+              onChange={(event) => onChange((current) => ({ ...current, category: event.target.value }))}
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            >
+              {recurringExpenseCategories.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">支払い頻度</span>
+            <select
+              value={form.frequency}
+              onChange={(event) =>
+                onChange((current) => ({
+                  ...current,
+                  frequency: event.target.value as RecurringExpenseFrequency,
+                  paymentDay: event.target.value === "weekly" ? "1" : current.paymentDay,
+                }))
+              }
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            >
+              {recurringExpenseFrequencies.map((frequency) => (
+                <option key={frequency} value={frequency}>
+                  {recurringExpenseFrequencyLabels[frequency]}
+                </option>
+              ))}
+            </select>
+          </label>
+          {form.frequency === "yearly" && (
+            <label>
+              <span className="mb-1 block text-sm font-bold text-ink/70">支払い月</span>
+              <select
+                value={form.paymentMonth}
+                onChange={(event) => onChange((current) => ({ ...current, paymentMonth: event.target.value }))}
+                className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+              >
+                {Array.from({ length: 12 }, (_, index) => index + 1).map((month) => (
+                  <option key={month} value={month}>
+                    {month}月
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">
+              {form.frequency === "weekly" ? "支払い曜日" : "支払日"}
+            </span>
+            {form.frequency === "weekly" ? (
+              <select
+                value={form.paymentDay}
+                onChange={(event) => onChange((current) => ({ ...current, paymentDay: event.target.value }))}
+                className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+              >
+                {weekdayLabels.map((label, index) => (
+                  <option key={label} value={index}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                required
+                inputMode="numeric"
+                min="1"
+                max="31"
+                value={form.paymentDay}
+                onChange={(event) => onChange((current) => ({ ...current, paymentDay: event.target.value }))}
+                type="number"
+                className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+              />
+            )}
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">支払い方法</span>
+            <select
+              value={form.paymentMethod}
+              onChange={(event) =>
+                onChange((current) => ({ ...current, paymentMethod: event.target.value as PaymentMethod }))
+              }
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            >
+              {paymentMethods.map((method) => (
+                <option key={method} value={method}>
+                  {paymentMethodLabels[method]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span className="mb-1 block text-sm font-bold text-ink/70">状態</span>
+            <select
+              value={form.status}
+              onChange={(event) =>
+                onChange((current) => ({ ...current, status: event.target.value as RecurringExpenseStatus }))
+              }
+              className="min-h-12 w-full rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            >
+              {recurringExpenseStatuses.map((status) => (
+                <option key={status} value={status}>
+                  {recurringExpenseStatusLabels[status]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="sm:col-span-2">
+            <span className="mb-1 block text-sm font-bold text-ink/70">メモ</span>
+            <textarea
+              value={form.memo}
+              onChange={(event) => onChange((current) => ({ ...current, memo: event.target.value }))}
+              rows={3}
+              placeholder="契約更新日、見直し候補、家族分など"
+              className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            />
+          </label>
+          <div className="sm:col-span-2">
+            <button
+              type="submit"
+              className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-3 font-bold text-white shadow-sm sm:w-auto"
+            >
+              {isEditing ? <Pencil className="h-5 w-5" aria-hidden /> : <Plus className="h-5 w-5" aria-hidden />}
+              {isEditing ? "更新する" : "定期支出を登録"}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-lg font-bold">今月分を支出に反映</h3>
+            <p className="mt-1 text-sm leading-6 text-ink/65">
+              自動では追加しません。必要な月だけ手動で通常の支出記録に追加できます。
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onReflectToTransactions}
+            className="inline-flex min-h-12 items-center justify-center gap-2 rounded-lg bg-ink px-4 py-3 text-sm font-bold text-white"
+          >
+            <ReceiptText className="h-4 w-4" aria-hidden />
+            {selectedMonth}分を反映
+          </button>
+        </div>
+        <p className="mt-3 text-sm text-ink/60">反映済みの定期支出: {reflectedCount}件</p>
+      </section>
+
+      <div className="grid gap-5 lg:grid-cols-[1fr_1fr]">
+        <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
+          <h3 className="text-lg font-bold">支払日が近いもの</h3>
+          <div className="mt-3 grid gap-2">
+            {upcomingExpenses.length === 0 ? (
+              <EmptyState text="有効な定期支出はまだありません。" />
+            ) : (
+              upcomingExpenses.map(({ expense, dueDate, daysUntilDue }) => (
+                <div key={expense.id} className="rounded-lg border border-ink/10 bg-paper p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-bold">{expense.name}</p>
+                      <p className="mt-1 text-sm text-ink/60">
+                        {formatShortDate(dueDate)} / {formatDaysUntilRecurring(daysUntilDue)}
+                      </p>
+                    </div>
+                    <p className="shrink-0 font-bold text-tomato">{formatYen(expense.amount)}</p>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft">
+          <h3 className="text-lg font-bold">カテゴリ別合計</h3>
+          <div className="mt-3 grid gap-2">
+            {categoryRows.length === 0 ? (
+              <EmptyState text="有効な定期支出を登録すると表示されます。" />
+            ) : (
+              categoryRows.map(([category, amount]) => (
+                <div key={category} className="flex items-center justify-between rounded-lg border border-ink/10 bg-paper px-3 py-3">
+                  <span className="font-bold">{category}</span>
+                  <span className="font-bold text-ink">{formatYen(amount)}</span>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+      </div>
+
+      <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-lg font-bold">登録済みの定期支出</h3>
+          <span className="text-sm font-bold text-ink/60">{expenses.length}件</span>
+        </div>
+        <div className="mt-3 grid gap-3">
+          {expenses.length === 0 ? (
+            <EmptyState text="スマホ代、サブスク、家賃などを登録するとここに表示されます。" />
+          ) : (
+            expenses
+              .map((expense) => ({
+                expense,
+                dueDate: getNextRecurringPaymentDate(expense),
+                overdueDates: expense.reflectedMonthKeys.includes(selectedMonth)
+                  ? []
+                  : getRecurringOccurrencesForMonth(expense, selectedMonth).filter((date) => daysUntil(date) < 0),
+              }))
+              .sort((a, b) => a.dueDate.localeCompare(b.dueDate))
+              .map(({ expense, dueDate, overdueDates }) => (
+                <article key={expense.id} className="rounded-lg border border-ink/10 bg-paper p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-lg font-bold">{expense.name}</h4>
+                        <span className={`rounded-md px-2 py-1 text-xs font-bold ${
+                          expense.status === "active" ? "bg-leaf/10 text-leaf" : "bg-ink/10 text-ink/60"
+                        }`}>
+                          {recurringExpenseStatusLabels[expense.status]}
+                        </span>
+                      </div>
+                      <div className="mt-2 grid gap-1 text-sm leading-6 text-ink/70 sm:grid-cols-2">
+                        <p>金額: {formatYen(expense.amount)}</p>
+                        <p>カテゴリ: {expense.category}</p>
+                        <p>頻度: {recurringExpenseFrequencyLabels[expense.frequency]}</p>
+                        <p>支払日: {formatRecurringPaymentSchedule(expense)}</p>
+                        <p>方法: {paymentMethodLabels[expense.paymentMethod]}</p>
+                        <p>次回: {formatShortDate(dueDate)} / {formatDaysUntilRecurring(daysUntil(dueDate))}</p>
+                      </div>
+                      {overdueDates.length > 0 && (
+                        <p className="mt-2 rounded-md bg-tomato/10 px-2 py-1 text-sm font-bold text-tomato">
+                          {selectedMonth} の支払日が過ぎています: {overdueDates.map(formatShortDate).join("、")}
+                        </p>
+                      )}
+                      {expense.memo && <p className="mt-1 text-sm text-ink/55">{expense.memo}</p>}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:justify-end">
+                      <button
+                        type="button"
+                        onClick={() => onEditExpense(expense)}
+                        className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm font-bold text-ink/70 hover:text-sea"
+                      >
+                        <Pencil className="h-4 w-4" aria-hidden />
+                        編集
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onToggleStatus(expense.id)}
+                        className="inline-flex min-h-11 items-center justify-center rounded-lg border border-ink/15 bg-white px-3 py-2 text-sm font-bold text-ink/70"
+                      >
+                        {expense.status === "active" ? "停止" : "有効化"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDeleteExpense(expense.id)}
+                        className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-tomato/25 bg-white px-3 py-2 text-sm font-bold text-tomato"
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden />
+                        削除
+                      </button>
+                    </div>
+                  </div>
+                </article>
+              ))
+          )}
+        </div>
       </section>
     </div>
   );
@@ -4371,6 +5009,7 @@ function BottomNav({
   const items: Array<{ tab: Tab; label: string; icon: LucideIcon }> = [
     { tab: "home", label: "ホーム", icon: Home },
     { tab: "record", label: "記録", icon: ReceiptText },
+    { tab: "recurring", label: "固定費", icon: CalendarClock },
     { tab: "foods", label: "食材", icon: Sprout },
     { tab: "recipes", label: "レシピ", icon: Soup },
     { tab: "settings", label: "設定", icon: Settings2 },
@@ -4378,7 +5017,7 @@ function BottomNav({
 
   return (
     <nav className="fixed inset-x-0 bottom-0 z-[2147483647] border-t border-ink/10 bg-white/95 pb-[calc(0.5rem+env(safe-area-inset-bottom))] pl-14 pr-2 pt-2 shadow-[0_-12px_35px_rgba(32,32,29,0.1)] backdrop-blur min-[430px]:px-2 lg:hidden">
-      <div className="mx-auto grid max-w-md grid-cols-5 gap-1">
+      <div className="mx-auto grid max-w-md grid-cols-6 gap-1">
         {items.map((item) => (
           <button
             key={item.tab}
@@ -4409,6 +5048,7 @@ function DesktopNav({
   const items: Array<{ tab: Tab; label: string; icon: LucideIcon }> = [
     { tab: "home", label: "ホーム", icon: Home },
     { tab: "record", label: "記録", icon: ReceiptText },
+    { tab: "recurring", label: "固定費", icon: CalendarClock },
     { tab: "foods", label: "食材", icon: Sprout },
     { tab: "recipes", label: "レシピ", icon: Soup },
     { tab: "settings", label: "設定", icon: Settings2 },

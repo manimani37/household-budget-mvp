@@ -1,5 +1,12 @@
 import { daysUntil, isSameMonth } from "@/lib/date";
-import type { CookedDish, ExpiryType, HouseholdData, Ingredient, Transaction } from "@/types/domain";
+import type {
+  CookedDish,
+  ExpiryType,
+  HouseholdData,
+  Ingredient,
+  RecurringExpense,
+  Transaction,
+} from "@/types/domain";
 
 export type MonthlySummary = {
   income: number;
@@ -12,6 +19,19 @@ export type CookingMonthlySummary = {
   dishCount: number;
   totalCost: number;
   averageCostPerDish: number;
+};
+
+export type RecurringExpenseOccurrence = {
+  expense: RecurringExpense;
+  dueDate: string;
+  daysUntilDue: number;
+};
+
+export type RecurringMonthlySummary = {
+  total: number;
+  activeCount: number;
+  occurrenceCount: number;
+  categoryTotals: Record<string, number>;
 };
 
 export function getMonthlyTransactions(
@@ -41,6 +61,118 @@ export function getMonthlySummary(
     balance: income - expense,
     transactionCount: monthly.length,
   };
+}
+
+export function getNextRecurringPaymentDate(
+  expense: RecurringExpense,
+  fromDate = new Date(),
+): string {
+  const start = startOfDay(fromDate);
+
+  if (expense.frequency === "weekly") {
+    const diff = (expense.paymentDay - start.getDay() + 7) % 7;
+    return toIsoDate(addDays(start, diff));
+  }
+
+  if (expense.frequency === "yearly") {
+    const currentYear = start.getFullYear();
+    const thisYear = makeDate(currentYear, expense.paymentMonth, expense.paymentDay);
+    if (thisYear.getTime() >= start.getTime()) {
+      return toIsoDate(thisYear);
+    }
+
+    return toIsoDate(makeDate(currentYear + 1, expense.paymentMonth, expense.paymentDay));
+  }
+
+  const currentYear = start.getFullYear();
+  const currentMonth = start.getMonth() + 1;
+  const thisMonth = makeDate(currentYear, currentMonth, expense.paymentDay);
+  if (thisMonth.getTime() >= start.getTime()) {
+    return toIsoDate(thisMonth);
+  }
+
+  const nextMonthDate = new Date(currentYear, currentMonth, 1);
+  return toIsoDate(
+    makeDate(nextMonthDate.getFullYear(), nextMonthDate.getMonth() + 1, expense.paymentDay),
+  );
+}
+
+export function getRecurringOccurrencesForMonth(
+  expense: RecurringExpense,
+  monthKey: string,
+): string[] {
+  if (expense.status !== "active") {
+    return [];
+  }
+
+  const [year, month] = monthKey.split("-").map(Number);
+  if (!year || !month) {
+    return [];
+  }
+
+  if (expense.frequency === "yearly") {
+    return expense.paymentMonth === month
+      ? [toIsoDate(makeDate(year, month, expense.paymentDay))]
+      : [];
+  }
+
+  if (expense.frequency === "monthly") {
+    return [toIsoDate(makeDate(year, month, expense.paymentDay))];
+  }
+
+  const dates: string[] = [];
+  const lastDay = getDaysInMonth(year, month);
+  for (let day = 1; day <= lastDay; day += 1) {
+    const date = makeDate(year, month, day);
+    if (date.getDay() === expense.paymentDay) {
+      dates.push(toIsoDate(date));
+    }
+  }
+
+  return dates;
+}
+
+export function getRecurringMonthlySummary(
+  expenses: RecurringExpense[],
+  monthKey: string,
+): RecurringMonthlySummary {
+  const activeExpenses = expenses.filter((expense) => expense.status === "active");
+  const categoryTotals: Record<string, number> = {};
+  let total = 0;
+  let occurrenceCount = 0;
+
+  activeExpenses.forEach((expense) => {
+    const occurrences = getRecurringOccurrencesForMonth(expense, monthKey);
+    const amount = expense.amount * occurrences.length;
+    total += amount;
+    occurrenceCount += occurrences.length;
+    categoryTotals[expense.category] = (categoryTotals[expense.category] ?? 0) + amount;
+  });
+
+  return {
+    total,
+    activeCount: activeExpenses.length,
+    occurrenceCount,
+    categoryTotals,
+  };
+}
+
+export function getUpcomingRecurringExpenses(
+  expenses: RecurringExpense[],
+  limit = 6,
+): RecurringExpenseOccurrence[] {
+  return expenses
+    .filter((expense) => expense.status === "active")
+    .map((expense) => {
+      const dueDate = getNextRecurringPaymentDate(expense);
+      return {
+        expense,
+        dueDate,
+        daysUntilDue: daysUntil(dueDate),
+      };
+    })
+    .sort((a, b) => a.daysUntilDue - b.daysUntilDue || a.expense.name.localeCompare(b.expense.name, "ja"))
+    .slice(0, limit);
 }
 
 export function getMonthlyCookedDishes(
@@ -199,4 +331,30 @@ export function getExpiryTone(expiryDate: string, expiryType: ExpiryType = "best
     label: `あと${days}日`,
     className: "border-leaf/25 bg-leaf/10 text-leaf",
   };
+}
+
+function makeDate(year: number, month: number, day: number): Date {
+  const clampedDay = Math.min(day, getDaysInMonth(year, month));
+  return new Date(year, month - 1, clampedDay);
+}
+
+function getDaysInMonth(year: number, month: number): number {
+  return new Date(year, month, 0).getDate();
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function toIsoDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }

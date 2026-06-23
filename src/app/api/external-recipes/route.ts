@@ -33,13 +33,20 @@ type RakutenApiContext = "category-list" | "category-ranking";
 
 class RakutenApiError extends Error {
   context: RakutenApiContext;
+  details?: Record<string, unknown>;
   status?: number;
 
-  constructor(context: RakutenApiContext, message: string, status?: number) {
+  constructor(
+    context: RakutenApiContext,
+    message: string,
+    status?: number,
+    details?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = "RakutenApiError";
     this.context = context;
     this.status = status;
+    this.details = details;
   }
 }
 
@@ -76,17 +83,29 @@ export async function POST(request: Request) {
     const ingredients = normalizeSearchIngredients(body.ingredients);
     const userIngredientDictionary = normalizeUserIngredientDictionary(body.userIngredientDictionary);
 
+    logExternalRecipeInfo("request", {
+      hasApplicationId: Boolean(environment.applicationId),
+      hasAccessKey: Boolean(environment.accessKey),
+      ingredientCount: ingredients.length,
+      userDictionaryCount: userIngredientDictionary.length,
+    });
+
     if (ingredients.length === 0) {
       return NextResponse.json({ recipes: [], message: "" });
     }
 
-    const categories = await fetchRakutenCategories(environment.applicationId);
+    const categories = await fetchRakutenCategories(environment.applicationId, environment.accessKey);
     const selectedCategories = pickRakutenRecipeCategories(categories, ingredients, 4);
     const targetCategories =
       selectedCategories.length > 0 ? selectedCategories : categories.slice(0, 1);
+    logExternalRecipeInfo("category-selection", {
+      categoryCount: categories.length,
+      selectedCategoryIds: targetCategories.map((category) => category.categoryId),
+    });
+
     const rankingResults = await Promise.allSettled(
       targetCategories.map((category) =>
-        fetchRakutenRecipeRanking(environment.applicationId, category),
+        fetchRakutenRecipeRanking(environment.applicationId, environment.accessKey, category),
       ),
     );
     const rankingRecipes = rankingResults.flatMap((result) => {
@@ -97,11 +116,20 @@ export async function POST(request: Request) {
       logExternalRecipeError(result.reason);
       return [];
     });
+    logExternalRecipeInfo("ranking-result", {
+      requestedCategoryCount: targetCategories.length,
+      failedCategoryCount: rankingResults.filter((result) => result.status === "rejected").length,
+      rawRecipeCount: rankingRecipes.length,
+    });
+
     const recipes = scoreExternalRecipes(
       dedupeRecipes(rankingRecipes),
       ingredients,
       userIngredientDictionary,
     ).slice(0, 8);
+    logExternalRecipeInfo("scored-result", {
+      recipeCount: recipes.length,
+    });
 
     return NextResponse.json({
       recipes,
@@ -142,6 +170,7 @@ function buildMissingEnvironmentMessage(missingNames: string[]): string {
 
 async function fetchRakutenCategories(
   applicationId: string,
+  accessKey: string,
 ): Promise<RakutenRecipeCategory[]> {
   const url = new URL(CATEGORY_LIST_URL);
   url.searchParams.set("applicationId", applicationId);
@@ -151,6 +180,7 @@ async function fetchRakutenCategories(
 
   const response = await fetch(url, {
     cache: "no-store",
+    headers: buildRakutenHeaders(accessKey),
   });
 
   if (!response.ok) {
@@ -158,6 +188,7 @@ async function fetchRakutenCategories(
       "category-list",
       "Rakuten recipe category list request failed",
       response.status,
+      await readRakutenErrorSummary(response),
     );
   }
 
@@ -167,7 +198,12 @@ async function fetchRakutenCategories(
 
   const categories = normalizeRakutenCategories(data.result);
   if (categories.length === 0) {
-    throw new RakutenApiError("category-list", "Rakuten recipe category list returned no categories");
+    throw new RakutenApiError(
+      "category-list",
+      "Rakuten recipe category list returned no categories",
+      undefined,
+      { resultShape: describeResponseShape(data.result) },
+    );
   }
 
   return categories;
@@ -175,6 +211,7 @@ async function fetchRakutenCategories(
 
 async function fetchRakutenRecipeRanking(
   applicationId: string,
+  accessKey: string,
   category: RakutenRecipeCategory,
 ): Promise<RakutenRecipeRankingItem[]> {
   const url = new URL(CATEGORY_RANKING_URL);
@@ -201,6 +238,7 @@ async function fetchRakutenRecipeRanking(
 
   const response = await fetch(url, {
     cache: "no-store",
+    headers: buildRakutenHeaders(accessKey),
   });
 
   if (!response.ok) {
@@ -208,6 +246,7 @@ async function fetchRakutenRecipeRanking(
       "category-ranking",
       `Rakuten recipe ranking request failed for category ${category.categoryId}`,
       response.status,
+      await readRakutenErrorSummary(response),
     );
   }
 
@@ -215,6 +254,12 @@ async function fetchRakutenRecipeRanking(
     result?: unknown;
   };
   const recipes = normalizeRakutenRankingItems(data.result);
+  if (recipes.length === 0) {
+    logExternalRecipeInfo("ranking-empty", {
+      categoryId: category.categoryId,
+      resultShape: describeResponseShape(data.result),
+    });
+  }
 
   return recipes.map((recipe) => ({
     ...recipe,
@@ -339,12 +384,62 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+function buildRakutenHeaders(accessKey: string): HeadersInit {
+  return {
+    Accept: "application/json",
+    accessKey,
+  };
+}
+
+async function readRakutenErrorSummary(response: Response): Promise<Record<string, unknown>> {
+  const contentType = response.headers.get("content-type") ?? "";
+  try {
+    if (contentType.includes("application/json")) {
+      const data = (await response.json()) as unknown;
+      if (isObject(data)) {
+        return {
+          error: typeof data.error === "string" ? data.error : undefined,
+          errorDescription:
+            typeof data.error_description === "string" ? data.error_description : undefined,
+        };
+      }
+    }
+
+    const text = await response.text();
+    return {
+      responsePreview: text.slice(0, 160),
+    };
+  } catch {
+    return {
+      responsePreview: "Unable to read response body",
+    };
+  }
+}
+
+function describeResponseShape(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `array(${value.length})`;
+  }
+  if (isObject(value)) {
+    return `object(${Object.keys(value).join(",")})`;
+  }
+  return typeof value;
+}
+
+function logExternalRecipeInfo(event: string, details: Record<string, unknown>) {
+  console.info("[ExternalRecipe API]", {
+    event,
+    ...details,
+  });
+}
+
 function logExternalRecipeError(error: unknown) {
   if (error instanceof RakutenApiError) {
     console.error("Failed to fetch external recipes", {
       context: error.context,
       status: error.status ?? null,
       message: error.message,
+      details: error.details ?? null,
     });
     return;
   }

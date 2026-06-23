@@ -937,7 +937,6 @@ export default function HomePage() {
       }));
       setEditingTransactionId(null);
       setTransactionForm(defaultTransactionForm());
-      setActiveTab("home");
       return;
     }
 
@@ -963,7 +962,6 @@ export default function HomePage() {
       ingredients: stockIngredient ? [stockIngredient, ...current.ingredients] : current.ingredients,
     }));
     setTransactionForm(defaultTransactionForm());
-    setActiveTab("home");
   }
 
   function addRecurringExpense(event: FormEvent<HTMLFormElement>) {
@@ -1146,7 +1144,6 @@ export default function HomePage() {
       }));
       setEditingIngredientId(null);
       setIngredientForm(defaultIngredientForm());
-      setActiveTab("home");
       return;
     }
 
@@ -1155,7 +1152,6 @@ export default function HomePage() {
       ingredients: [ingredient, ...current.ingredients],
     }));
     setIngredientForm(defaultIngredientForm());
-    setActiveTab("home");
   }
 
   function addReceiptDraft(draft: ReceiptDraft) {
@@ -1202,7 +1198,6 @@ export default function HomePage() {
       transactions: [transaction, ...current.transactions],
       ingredients: [...ingredients, ...current.ingredients],
     }));
-    setActiveTab("home");
   }
 
   function updateIngredientStatus(id: string, status: IngredientStatus) {
@@ -2950,7 +2945,9 @@ function FoodsView({
 
   function handleIngredientSubmit(event: FormEvent<HTMLFormElement>) {
     onSubmit(event);
-    setFoodTab("list");
+    if (isEditing) {
+      setFoodTab("list");
+    }
   }
 
   function handleCancelEdit() {
@@ -3713,7 +3710,7 @@ function RecipeFormSection({
         <h3 className="text-lg font-bold">レシピを追加</h3>
       </div>
 
-      <form onSubmit={onSubmit} className="mt-4 grid gap-4 sm:grid-cols-2">
+      <form onSubmit={onSubmit} className="mt-4 grid min-w-0 gap-4 sm:grid-cols-2">
         <label className="sm:col-span-2">
           <span className="mb-1 block text-sm font-bold text-ink/70">レシピ名</span>
           <input
@@ -3725,7 +3722,7 @@ function RecipeFormSection({
           />
         </label>
 
-        <label>
+        <label className="min-w-0">
           <span className="mb-1 block text-sm font-bold text-ink/70">必要な食材</span>
           <textarea
             required
@@ -3735,11 +3732,11 @@ function RecipeFormSection({
             }
             rows={3}
             placeholder="例: 卵、 ご飯"
-            className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            className="min-h-24 w-full max-w-full resize-none overflow-x-hidden break-words rounded-lg border border-ink/15 bg-paper px-3 py-3"
           />
         </label>
 
-        <label>
+        <label className="min-w-0">
           <span className="mb-1 block text-sm font-bold text-ink/70">任意の食材</span>
           <textarea
             value={form.optionalIngredients}
@@ -3748,7 +3745,7 @@ function RecipeFormSection({
             }
             rows={3}
             placeholder="例: ねぎ、チーズ"
-            className="min-h-24 w-full resize-none rounded-lg border border-ink/15 bg-paper px-3 py-3"
+            className="min-h-24 w-full max-w-full resize-none overflow-x-hidden break-words rounded-lg border border-ink/15 bg-paper px-3 py-3"
           />
         </label>
 
@@ -3843,7 +3840,7 @@ function RecipeFormSection({
               >
                 <div className="min-w-0">
                   <p className="font-bold">{recipe.name}</p>
-                  <p className="mt-1 truncate text-sm text-ink/60">
+                  <p className="mt-1 max-w-full break-words text-sm leading-6 text-ink/60">
                     {recipe.requiredIngredients.join("、")} / {recipe.cookingTimeMinutes}分
                   </p>
                 </div>
@@ -4569,16 +4566,16 @@ function RecipeChipGroup({
   const toneClass = tone === "leaf" ? "bg-leaf/10 text-leaf" : "bg-tomato/10 text-tomato";
 
   return (
-    <div>
+    <div className="min-w-0">
       <p className="text-xs font-bold text-ink/55">{label}</p>
       <div className="mt-2 flex flex-wrap gap-2">
         {values.length === 0 ? (
-          <span className="rounded-md bg-white px-2 py-1 text-xs font-bold text-ink/55">
+          <span className="max-w-full break-words rounded-md bg-white px-2 py-1 text-xs font-bold text-ink/55">
             {emptyText}
           </span>
         ) : (
           values.map((value) => (
-            <span key={value} className={`rounded-md px-2 py-1 text-xs font-bold ${toneClass}`}>
+            <span key={value} className={`max-w-full break-words rounded-md px-2 py-1 text-xs font-bold ${toneClass}`}>
               {value}
             </span>
           ))

@@ -64,6 +64,13 @@ export async function GET() {
 export async function POST(request: Request) {
   const environment = readRakutenEnvironment();
 
+  logExternalRecipeInfo("request-received", {
+    configured: environment.missingNames.length === 0,
+    missingEnvNames: environment.missingNames,
+    hasApplicationId: Boolean(environment.applicationId),
+    hasAccessKey: Boolean(environment.accessKey),
+  });
+
   if (environment.missingNames.length > 0) {
     return NextResponse.json({
       recipes: [],
@@ -173,14 +180,33 @@ async function fetchRakutenCategories(
   accessKey: string,
 ): Promise<RakutenRecipeCategory[]> {
   const url = new URL(CATEGORY_LIST_URL);
-  url.searchParams.set("applicationId", applicationId);
+  appendRakutenAuthParams(url, applicationId, accessKey);
   url.searchParams.set("categoryType", "large");
   url.searchParams.set("format", "json");
   url.searchParams.set("formatVersion", "2");
 
-  const response = await fetch(url, {
-    cache: "no-store",
-    headers: buildRakutenHeaders(accessKey),
+  logExternalRecipeInfo("rakuten-request", {
+    context: "category-list",
+    authPlacement: "query",
+  });
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      cache: "no-store",
+      headers: buildRakutenHeaders(),
+    });
+  } catch (error) {
+    throw new RakutenApiError(
+      "category-list",
+      "Rakuten recipe category list network request failed",
+      undefined,
+      readNetworkErrorDetails(error),
+    );
+  }
+  logExternalRecipeInfo("rakuten-response", {
+    context: "category-list",
+    status: response.status,
   });
 
   if (!response.ok) {
@@ -197,6 +223,10 @@ async function fetchRakutenCategories(
   };
 
   const categories = normalizeRakutenCategories(data.result);
+  logExternalRecipeInfo("category-list-result", {
+    categoryCount: categories.length,
+    resultShape: describeResponseShape(data.result),
+  });
   if (categories.length === 0) {
     throw new RakutenApiError(
       "category-list",
@@ -215,7 +245,7 @@ async function fetchRakutenRecipeRanking(
   category: RakutenRecipeCategory,
 ): Promise<RakutenRecipeRankingItem[]> {
   const url = new URL(CATEGORY_RANKING_URL);
-  url.searchParams.set("applicationId", applicationId);
+  appendRakutenAuthParams(url, applicationId, accessKey);
   url.searchParams.set("categoryId", category.categoryId);
   url.searchParams.set("format", "json");
   url.searchParams.set("formatVersion", "2");
@@ -236,9 +266,33 @@ async function fetchRakutenRecipeRanking(
     ].join(","),
   );
 
-  const response = await fetch(url, {
-    cache: "no-store",
-    headers: buildRakutenHeaders(accessKey),
+  logExternalRecipeInfo("rakuten-request", {
+    context: "category-ranking",
+    categoryId: category.categoryId,
+    authPlacement: "query",
+  });
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      cache: "no-store",
+      headers: buildRakutenHeaders(),
+    });
+  } catch (error) {
+    throw new RakutenApiError(
+      "category-ranking",
+      `Rakuten recipe ranking network request failed for category ${category.categoryId}`,
+      undefined,
+      {
+        categoryId: category.categoryId,
+        ...readNetworkErrorDetails(error),
+      },
+    );
+  }
+  logExternalRecipeInfo("rakuten-response", {
+    context: "category-ranking",
+    categoryId: category.categoryId,
+    status: response.status,
   });
 
   if (!response.ok) {
@@ -254,6 +308,11 @@ async function fetchRakutenRecipeRanking(
     result?: unknown;
   };
   const recipes = normalizeRakutenRankingItems(data.result);
+  logExternalRecipeInfo("ranking-result-shape", {
+    categoryId: category.categoryId,
+    rawRecipeCount: recipes.length,
+    resultShape: describeResponseShape(data.result),
+  });
   if (recipes.length === 0) {
     logExternalRecipeInfo("ranking-empty", {
       categoryId: category.categoryId,
@@ -384,10 +443,14 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function buildRakutenHeaders(accessKey: string): HeadersInit {
+function appendRakutenAuthParams(url: URL, applicationId: string, accessKey: string) {
+  url.searchParams.set("applicationId", applicationId);
+  url.searchParams.set("accessKey", accessKey);
+}
+
+function buildRakutenHeaders(): HeadersInit {
   return {
     Accept: "application/json",
-    accessKey,
   };
 }
 
@@ -397,10 +460,19 @@ async function readRakutenErrorSummary(response: Response): Promise<Record<strin
     if (contentType.includes("application/json")) {
       const data = (await response.json()) as unknown;
       if (isObject(data)) {
+        const nestedErrors = isObject(data.errors) ? data.errors : null;
         return {
           error: typeof data.error === "string" ? data.error : undefined,
           errorDescription:
             typeof data.error_description === "string" ? data.error_description : undefined,
+          errorCode:
+            nestedErrors && typeof nestedErrors.errorCode === "number"
+              ? nestedErrors.errorCode
+              : undefined,
+          errorMessage:
+            nestedErrors && typeof nestedErrors.errorMessage === "string"
+              ? nestedErrors.errorMessage
+              : undefined,
         };
       }
     }
@@ -414,6 +486,14 @@ async function readRakutenErrorSummary(response: Response): Promise<Record<strin
       responsePreview: "Unable to read response body",
     };
   }
+}
+
+function readNetworkErrorDetails(error: unknown): Record<string, unknown> {
+  return {
+    networkError: true,
+    errorName: error instanceof Error ? error.name : typeof error,
+    errorMessage: error instanceof Error ? error.message : "Unknown network error",
+  };
 }
 
 function describeResponseShape(value: unknown): string {

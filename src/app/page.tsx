@@ -3464,10 +3464,18 @@ function RecipesView({
       <ExpiringSection ingredients={expiringIngredients} />
       <RecipeFormSection
         form={recipeForm}
-        userRecipes={userRecipes}
         onSubmit={onAddRecipe}
         onChange={onRecipeFormChange}
+      />
+      <RegisteredUserRecipesSection
+        userRecipes={userRecipes}
         onDeleteRecipe={onDeleteUserRecipe}
+        onCookRecipe={(recipe) =>
+          onStartCookingFromRecipe({
+            title: recipe.name,
+            ingredients: [...new Set([...recipe.requiredIngredients, ...recipe.optionalIngredients])],
+          })
+        }
       />
       <CookingSection
         form={cookingForm}
@@ -3499,7 +3507,7 @@ function RecipesView({
         }
       />
       <RecipeSection
-        title="今日おすすめ"
+        title="今日のレシピ提案"
         recipes={recipes.today}
         onCookRecipe={(recipe) =>
           onStartCookingFromRecipe({
@@ -3605,101 +3613,114 @@ function ExternalRecipeCard({
   recipe: ExternalRecipe;
   onCookRecipe?: (recipe: ExternalRecipe) => void;
 }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   return (
-    <article className="overflow-hidden rounded-lg border border-ink/10 bg-paper">
-      <div className="grid gap-0 md:grid-cols-[160px_1fr]">
-        <div className="aspect-[4/3] bg-white md:aspect-auto">
-          {recipe.foodImageUrl ? (
-            <img
-              src={recipe.foodImageUrl}
-              alt=""
-              className="h-full min-h-40 w-full object-cover"
-              loading="lazy"
-            />
-          ) : (
-            <div className="flex h-full min-h-40 items-center justify-center text-sm font-bold text-ink/45">
-              画像なし
-            </div>
-          )}
-        </div>
-
-        <div className="p-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h4 className="text-lg font-bold leading-snug">{recipe.recipeTitle}</h4>
-                <span className="rounded-md bg-white px-2 py-1 text-xs font-bold text-honey">
-                  {recipe.sourceCategoryName}
-                </span>
-              </div>
-              <p className="mt-1 text-sm leading-6 text-ink/65">{recipe.reason}</p>
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-center sm:w-44">
-              <RecipeMetric label="時間" value={recipe.recipeIndication} />
-              <RecipeMetric label="費用" value={recipe.recipeCost} />
-            </div>
+    <article className="rounded-lg border border-ink/10 bg-paper p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h4 className="text-lg font-bold leading-snug">{recipe.recipeTitle}</h4>
+            <span className="rounded-md bg-white px-2 py-1 text-xs font-bold text-honey">
+              {recipe.sourceCategoryName}
+            </span>
           </div>
-
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <RecipeChipGroup
-              label="使えそうな手持ち食材"
-              values={recipe.usedIngredients}
-              emptyText="なし"
-              tone="leaf"
-            />
-            <RecipeChipGroup
-              label="足りない可能性がある食材"
-              values={recipe.possibleMissingIngredients}
-              emptyText="少なめ"
-              tone={recipe.possibleMissingIngredients.length === 0 ? "leaf" : "tomato"}
-            />
-          </div>
-
-          {recipe.recipeMaterial.length > 0 && (
-            <div className="mt-3">
-              <p className="text-xs font-bold text-ink/55">材料</p>
-              <p className="mt-1 line-clamp-2 text-sm leading-6 text-ink/70">
-                {recipe.recipeMaterial.join("、")}
-              </p>
-            </div>
-          )}
-
-          {onCookRecipe && (
-            <button
-              type="button"
-              onClick={() => onCookRecipe(recipe)}
-              className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-2 text-sm font-bold text-white sm:mr-2 sm:w-auto"
-            >
-              <CheckCircle2 className="h-4 w-4" aria-hidden />
-              この料理を作った
-            </button>
-          )}
-          <a
-            href={recipe.recipeUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-4 inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-ink px-4 py-2 text-sm font-bold text-white sm:w-auto"
-          >
-            元レシピを見る
-          </a>
+          <p className="mt-1 text-sm leading-6 text-ink/65">{recipe.reason}</p>
         </div>
+        <button
+          type="button"
+          aria-expanded={isExpanded}
+          onClick={() => setIsExpanded((current) => !current)}
+          className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-ink/10 bg-white px-4 py-2 text-sm font-bold text-ink/70"
+        >
+          {isExpanded ? "閉じる" : "詳細を見る"}
+        </button>
       </div>
+
+      {isExpanded && (
+        <div className="mt-4 border-t border-ink/10 pt-4">
+          <div className="grid gap-4 md:grid-cols-[160px_1fr]">
+            <div className="aspect-[4/3] overflow-hidden rounded-lg bg-white md:aspect-auto">
+              {recipe.foodImageUrl ? (
+                <img
+                  src={recipe.foodImageUrl}
+                  alt=""
+                  className="h-full min-h-40 w-full object-cover"
+                  loading="lazy"
+                />
+              ) : (
+                <div className="flex h-full min-h-40 items-center justify-center text-sm font-bold text-ink/45">
+                  画像なし
+                </div>
+              )}
+            </div>
+
+            <div className="min-w-0">
+              <div className="grid grid-cols-2 gap-2 text-center">
+                <RecipeMetric label="時間" value={recipe.recipeIndication} />
+                <RecipeMetric label="費用" value={recipe.recipeCost} />
+              </div>
+
+              <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <RecipeChipGroup
+                  label="使えそうな手持ち食材"
+                  values={recipe.usedIngredients}
+                  emptyText="なし"
+                  tone="leaf"
+                />
+                <RecipeChipGroup
+                  label="足りない可能性がある食材"
+                  values={recipe.possibleMissingIngredients}
+                  emptyText="少なめ"
+                  tone={recipe.possibleMissingIngredients.length === 0 ? "leaf" : "tomato"}
+                />
+              </div>
+
+              {recipe.recipeMaterial.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-xs font-bold text-ink/55">材料</p>
+                  <p className="mt-1 max-w-full break-words text-sm leading-6 text-ink/70">
+                    {recipe.recipeMaterial.join("、")}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+            {onCookRecipe && (
+              <button
+                type="button"
+                onClick={() => onCookRecipe(recipe)}
+                className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-honey px-4 py-2 text-sm font-bold text-ink sm:w-auto"
+              >
+                <CheckCircle2 className="h-4 w-4" aria-hidden />
+                料理を作った
+              </button>
+            )}
+            <a
+              href={recipe.recipeUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-11 w-full items-center justify-center rounded-lg bg-ink px-4 py-2 text-sm font-bold text-white sm:w-auto"
+            >
+              元レシピを見る
+            </a>
+          </div>
+        </div>
+      )}
     </article>
   );
 }
 
 function RecipeFormSection({
   form,
-  userRecipes,
   onSubmit,
   onChange,
-  onDeleteRecipe,
 }: {
   form: RecipeFormState;
-  userRecipes: UserRecipe[];
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onChange: (value: RecipeFormState | ((current: RecipeFormState) => RecipeFormState)) => void;
-  onDeleteRecipe: (id: string) => void;
 }) {
   const ratingOptions: RecipeRating[] = [1, 2, 3, 4, 5];
 
@@ -3707,7 +3728,7 @@ function RecipeFormSection({
     <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
       <div className="flex items-center gap-2">
         <Plus className="h-5 w-5 text-leaf" aria-hidden />
-        <h3 className="text-lg font-bold">レシピを追加</h3>
+        <h3 className="text-lg font-bold">新しいレシピを追加</h3>
       </div>
 
       <form onSubmit={onSubmit} className="mt-4 grid min-w-0 gap-4 sm:grid-cols-2">
@@ -3825,38 +3846,74 @@ function RecipeFormSection({
           </button>
         </div>
       </form>
+    </section>
+  );
+}
 
-      {userRecipes.length > 0 && (
-        <div className="mt-5 border-t border-ink/10 pt-4">
-          <div className="flex items-center justify-between gap-3">
-            <h4 className="font-bold">追加済みレシピ</h4>
-            <span className="text-sm font-bold text-ink/60">{userRecipes.length}件</span>
-          </div>
-          <div className="mt-3 grid gap-2">
-            {userRecipes.map((recipe) => (
-              <div
-                key={recipe.id}
-                className="flex flex-col gap-3 rounded-lg border border-ink/10 bg-paper p-3 sm:flex-row sm:items-center sm:justify-between"
-              >
+function RegisteredUserRecipesSection({
+  userRecipes,
+  onDeleteRecipe,
+  onCookRecipe,
+}: {
+  userRecipes: UserRecipe[];
+  onDeleteRecipe: (id: string) => void;
+  onCookRecipe: (recipe: UserRecipe) => void;
+}) {
+  return (
+    <section className="rounded-lg border border-ink/10 bg-white p-4 shadow-soft sm:p-5">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <ClipboardList className="h-5 w-5 text-sea" aria-hidden />
+          <h3 className="text-lg font-bold">登録済みレシピ</h3>
+        </div>
+        <span className="text-sm font-bold text-ink/60">{userRecipes.length}件</span>
+      </div>
+
+      <div className="mt-3 grid gap-3">
+        {userRecipes.length === 0 ? (
+          <EmptyState text="新しいレシピを追加すると、ここから料理記録を始められます。" />
+        ) : (
+          userRecipes.map((recipe) => (
+            <article key={recipe.id} className="rounded-lg border border-ink/10 bg-paper p-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
-                  <p className="font-bold">{recipe.name}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h4 className="font-bold leading-snug">{recipe.name}</h4>
+                    <span className="rounded-md bg-white px-2 py-1 text-xs font-bold text-sea">
+                      {recipe.genre}
+                    </span>
+                    <span className="rounded-md bg-white px-2 py-1 text-xs font-bold text-ink/60">
+                      {recipe.cookingTimeMinutes}分
+                    </span>
+                  </div>
                   <p className="mt-1 max-w-full break-words text-sm leading-6 text-ink/60">
-                    {recipe.requiredIngredients.join("、")} / {recipe.cookingTimeMinutes}分
+                    {recipe.requiredIngredients.join("、")}
                   </p>
+                  {recipe.notes && (
+                    <p className="mt-1 line-clamp-2 text-sm leading-6 text-ink/70">{recipe.notes}</p>
+                  )}
                 </div>
                 <button
                   type="button"
                   onClick={() => onDeleteRecipe(recipe.id)}
-                  className="inline-flex min-h-11 items-center justify-center gap-1 rounded-lg border border-ink/10 bg-white px-3 py-2 text-sm font-bold text-ink/55 hover:text-tomato"
+                  className="inline-flex min-h-11 shrink-0 items-center justify-center gap-1 rounded-lg border border-ink/10 bg-white px-3 py-2 text-sm font-bold text-ink/55 hover:text-tomato"
                 >
                   <Trash2 className="h-4 w-4" aria-hidden />
                   削除
                 </button>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+              <button
+                type="button"
+                onClick={() => onCookRecipe(recipe)}
+                className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-honey px-4 py-2 text-sm font-bold text-ink sm:w-auto"
+              >
+                <CheckCircle2 className="h-4 w-4" aria-hidden />
+                料理を作った
+              </button>
+            </article>
+          ))
+        )}
+      </div>
     </section>
   );
 }
@@ -3892,7 +3949,7 @@ function CookingSection({
         <div>
           <div className="flex items-center gap-2">
             <CheckCircle2 className="h-5 w-5 text-leaf" aria-hidden />
-            <h3 className="text-lg font-bold">料理を作った</h3>
+            <h3 className="text-lg font-bold">料理を作った記録</h3>
           </div>
           <p className="mt-1 text-sm leading-6 text-ink/65">
             使った食材を登録すると、同じ単位のストックを自動で減らして原価を計算します。
@@ -4463,6 +4520,8 @@ function RecipeCard({
   recipe: RecipeSuggestion;
   onCookRecipe?: (recipe: RecipeSuggestion) => void;
 }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+
   return (
     <article className="rounded-lg border border-ink/10 bg-paper p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -4480,64 +4539,77 @@ function RecipeCard({
           </div>
           <p className="mt-1 text-sm leading-6 text-ink/65">{recipe.subtitle}</p>
         </div>
-        <div className="grid grid-cols-3 gap-2 text-center sm:w-52">
-          <RecipeMetric label="簡単度" value={`${recipe.easeLevel}/5`} />
-          <RecipeMetric label="節約度" value={`${recipe.savingLevel}/5`} />
-          <RecipeMetric label="時間" value={`${recipe.cookingTimeMinutes}分`} />
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-3 md:grid-cols-2">
-        <RecipeChipGroup
-          label="使える手持ち食材"
-          values={recipe.usedIngredients}
-          emptyText="なし"
-          tone="leaf"
-        />
-        <RecipeChipGroup
-          label="足りない食材"
-          values={recipe.missingIngredients}
-          emptyText="なし"
-          tone={recipe.missingIngredients.length === 0 ? "leaf" : "tomato"}
-        />
-      </div>
-
-      <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr_1.2fr]">
-        <div className="rounded-lg border border-ink/10 bg-white p-3">
-          <p className="text-xs font-bold text-ink/55">期限が近い食材</p>
-          <p className={`mt-1 text-sm font-bold ${recipe.usesExpiringIngredient ? "text-honey" : "text-ink/60"}`}>
-            {recipe.usesExpiringIngredient ? "使っています" : "使っていません"}
-          </p>
-        </div>
-        <div className="rounded-lg border border-ink/10 bg-white p-3">
-          <p className="text-xs font-bold text-ink/55">作りやすさ</p>
-          <RatingMeter value={recipe.easeLevel} />
-        </div>
-        <div className="rounded-lg border border-ink/10 bg-white p-3">
-          <p className="text-xs font-bold text-ink/55">なぜ提案したか</p>
-          <p className="mt-1 text-sm leading-6 text-ink/75">{recipe.reason}</p>
-        </div>
-      </div>
-
-      {recipe.steps.length > 0 && (
-        <ol className="mt-3 space-y-1 text-sm leading-6 text-ink/75">
-          {recipe.steps.slice(0, 3).map((step, index) => (
-            <li key={`${recipe.id}-${step}`}>
-              <span className="font-bold text-ink">{index + 1}. </span>
-              {step}
-            </li>
-          ))}
-        </ol>
-      )}
-      {onCookRecipe && (
         <button
           type="button"
-          onClick={() => onCookRecipe(recipe)}
-          className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-leaf px-4 py-2 text-sm font-bold text-white sm:w-auto"
+          aria-expanded={isExpanded}
+          onClick={() => setIsExpanded((current) => !current)}
+          className="inline-flex min-h-11 shrink-0 items-center justify-center rounded-lg border border-ink/10 bg-white px-4 py-2 text-sm font-bold text-ink/70"
         >
-          <CheckCircle2 className="h-4 w-4" aria-hidden />
-          この料理を作った
+          {isExpanded ? "閉じる" : "詳細を見る"}
         </button>
+      </div>
+
+      {isExpanded && (
+        <div className="mt-4 border-t border-ink/10 pt-4">
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <RecipeMetric label="簡単度" value={`${recipe.easeLevel}/5`} />
+            <RecipeMetric label="節約度" value={`${recipe.savingLevel}/5`} />
+            <RecipeMetric label="時間" value={`${recipe.cookingTimeMinutes}分`} />
+          </div>
+
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            <RecipeChipGroup
+              label="使える手持ち食材"
+              values={recipe.usedIngredients}
+              emptyText="なし"
+              tone="leaf"
+            />
+            <RecipeChipGroup
+              label="足りない食材"
+              values={recipe.missingIngredients}
+              emptyText="なし"
+              tone={recipe.missingIngredients.length === 0 ? "leaf" : "tomato"}
+            />
+          </div>
+
+          <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_1fr_1.2fr]">
+            <div className="rounded-lg border border-ink/10 bg-white p-3">
+              <p className="text-xs font-bold text-ink/55">期限が近い食材</p>
+              <p className={`mt-1 text-sm font-bold ${recipe.usesExpiringIngredient ? "text-honey" : "text-ink/60"}`}>
+                {recipe.usesExpiringIngredient ? "使っています" : "使っていません"}
+              </p>
+            </div>
+            <div className="rounded-lg border border-ink/10 bg-white p-3">
+              <p className="text-xs font-bold text-ink/55">作りやすさ</p>
+              <RatingMeter value={recipe.easeLevel} />
+            </div>
+            <div className="rounded-lg border border-ink/10 bg-white p-3">
+              <p className="text-xs font-bold text-ink/55">なぜ提案したか</p>
+              <p className="mt-1 text-sm leading-6 text-ink/75">{recipe.reason}</p>
+            </div>
+          </div>
+
+          {recipe.steps.length > 0 && (
+            <ol className="mt-3 space-y-1 text-sm leading-6 text-ink/75">
+              {recipe.steps.slice(0, 3).map((step, index) => (
+                <li key={`${recipe.id}-${step}`}>
+                  <span className="font-bold text-ink">{index + 1}. </span>
+                  {step}
+                </li>
+              ))}
+            </ol>
+          )}
+          {onCookRecipe && (
+            <button
+              type="button"
+              onClick={() => onCookRecipe(recipe)}
+              className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-honey px-4 py-2 text-sm font-bold text-ink sm:w-auto"
+            >
+              <CheckCircle2 className="h-4 w-4" aria-hidden />
+              料理を作った
+            </button>
+          )}
+        </div>
       )}
     </article>
   );
